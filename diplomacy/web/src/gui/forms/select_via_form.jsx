@@ -19,7 +19,7 @@ import PropTypes from "prop-types";
 import {Button} from "../components/button";
 import {FancyBox} from "../components/fancyBox";
 
-const HotKey = require('react-shortcut');
+import HotKey from 'react-shortcut';
 
 export class SelectViaForm extends React.Component {
     render() {

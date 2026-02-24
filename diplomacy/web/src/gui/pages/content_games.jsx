@@ -120,6 +120,7 @@ export class ContentGames extends React.Component {
         const title = 'Games';
         const page = this.getPage();
         const navigation = [
+            ['dashboard', () => page.loadDashboard()],
             ['load a game from disk', page.loadGameFromDisk],
             ['logout', page.logout]
         ];

@@ -19,25 +19,23 @@ import {FancyBox} from "../../components/fancyBox";
 import PropTypes from "prop-types";
 import Octicon, {ArrowLeft} from "@primer/octicons-react";
 
-export class PanelChoosePower extends React.Component {
+export class PanelChoosePlayers extends React.Component {
     render() {
-        this.props.powers.sort();
         return (
-            <FancyBox title={'Choose your power'} onClose={this.props.cancel}>
+            <FancyBox title={'Number of human players'} onClose={this.props.cancel}>
                 <div className="row">
                     <div className="col-sm">
-                        <button type="button" className="btn btn-secondary btn-sm btn-block inline" onClick={() => {
-                            this.props.onUpdateParams({power_name: null});
-                            this.props.forward();
-                        }}>I just want to observe
+                        <button type="button" className="btn btn-secondary btn-sm w-100 inline" onClick={() => {
+                            this.props.onUpdateParams({n_controls: 0});
+                            this.props.forward(2);
+                        }}>None - just bots
                         </button>
                     </div>
                     <div className="col-sm">
-                        <button type="button" className="btn btn-secondary btn-sm btn-block inline" onClick={() => {
-                            const powerName = this.props.powers[Math.floor(Math.random() * this.props.powers.length)];
-                            this.props.onUpdateParams({power_name: powerName});
+                        <button type="button" className="btn btn-secondary btn-sm w-100 inline" onClick={() => {
+                            this.props.onUpdateParams({n_controls: this.props.nbPowers});
                             this.props.forward();
-                        }}>Choose randomly for me
+                        }}>All humans - no bots
                         </button>
                     </div>
                 </div>
@@ -46,15 +44,15 @@ export class PanelChoosePower extends React.Component {
                         <div className="d-flex flex-row justify-content-center my-2">
                             {(() => {
                                 const choice = [];
-                                for (let i = 0; i < this.props.powers.length; ++i) {
+                                for (let i = 0; i < this.props.nbPowers; ++i) {
                                     choice.push(
                                         <button key={i} type="button"
-                                                className={`btn btn-secondary btn-sm flex-grow-1 ${i === 0 ? '' : 'ml-sm-1'}`}
+                                                className={`btn btn-secondary btn-sm flex-grow-1 ${i === 0 ? '' : 'ms-sm-1'}`}
                                                 onClick={() => {
-                                                    this.props.onUpdateParams({power_name: this.props.powers[i]});
+                                                    this.props.onUpdateParams({n_controls: i + 1});
                                                     this.props.forward();
                                                 }}>
-                                            {this.props.powers[i]}
+                                            {i + 1}
                                         </button>
                                     );
                                 }
@@ -76,10 +74,10 @@ export class PanelChoosePower extends React.Component {
     }
 }
 
-PanelChoosePower.propTypes = {
+PanelChoosePlayers.propTypes = {
     backward: PropTypes.func.isRequired,
     forward: PropTypes.func.isRequired,
     cancel: PropTypes.func.isRequired,
     onUpdateParams: PropTypes.func.isRequired,
-    powers: PropTypes.arrayOf(PropTypes.string).isRequired
+    nbPowers: PropTypes.number.isRequired
 };

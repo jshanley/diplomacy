@@ -47,17 +47,17 @@ export class JoinForm extends React.Component {
         const onChange = Forms.createOnChangeCallback(this, this.props.onChange);
         const onSubmit = Forms.createOnSubmitCallback(this, this.props.onSubmit);
         return (
-            <form className={'form-inline'}>
-                <div className={'form-group mr-2'}>
+            <form className={'d-flex align-items-center'}>
+                <div className={'form-group me-2'}>
                     {Forms.createLabel(this.getPowerNameID(), 'Power:')}
-                    <select id={this.getPowerNameID()} className={'from-control custom-select ml-2'}
+                    <select id={this.getPowerNameID()} className={'form-control form-select ms-2'}
                             value={Forms.getValue(this.state, this.getPowerNameID())} onChange={onChange}>
                         {Forms.createSelectOptions(this.props.availablePowers, true)}
                     </select>
                 </div>
                 {this.props.password_required ? (
-                    <div className={'form-group mr-2'}>
-                        {Forms.createLabel(this.getPasswordID(), '', 'sr-only')}
+                    <div className={'form-group me-2'}>
+                        {Forms.createLabel(this.getPasswordID(), '', 'visually-hidden')}
                         <input id={this.getPasswordID()} type={'password'} className={'form-control'}
                                placeholder={'registration password'}
                                value={Forms.getValue(this.state, this.getPasswordID())}

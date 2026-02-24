@@ -1,52 +1,56 @@
-// ==============================================================================
-// Copyright (C) 2019 - Philip Paquette, Steven Bocco
-//
-//  This program is free software: you can redistribute it and/or modify it under
-//  the terms of the GNU Affero General Public License as published by the Free
-//  Software Foundation, either version 3 of the License, or (at your option) any
-//  later version.
-//
-//  This program is distributed in the hope that it will be useful, but WITHOUT
-//  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-//  FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more
-//  details.
-//
-//  You should have received a copy of the GNU Affero General Public License along
-//  with this program.  If not, see <https://www.gnu.org/licenses/>.
-// ==============================================================================
 import React from 'react';
 import {Connection} from "../../diplomacy/client/connection";
-import {ConnectionForm} from "../forms/connection_form";
 import {DipStorage} from "../utils/dipStorage";
 import {Helmet} from "react-helmet";
-import {Navigation} from "../components/navigation";
 import {PageContext} from "../components/page_context";
 
 export class ContentConnection extends React.Component {
     constructor(props) {
         super(props);
         this.connection = null;
+
+        const saved = DipStorage.getConnectionForm();
+        this.state = {
+            hostname: (saved && saved.hostname) || window.location.hostname,
+            port: (saved && saved.port) || ((window.location.protocol.toLowerCase() === 'https:') ? 8433 : 8432),
+            username: (saved && saved.username) || '',
+            password: '',
+            showServer: (saved && saved.showServerFields) || false,
+            connecting: false,
+        };
         this.onSubmit = this.onSubmit.bind(this);
     }
 
-    onSubmit(data) {
+    onSubmit(e) {
+        e.preventDefault();
         const page = this.context;
-        for (let fieldName of ['hostname', 'port', 'username', 'password', 'showServerFields'])
-            if (!data.hasOwnProperty(fieldName))
-                return page.error(`Missing ${fieldName}, got ${JSON.stringify(data)}`);
-        page.info('Connecting ...');
+        const {hostname, port, username, password} = this.state;
+
+        if (!username || !password) {
+            return page.error('Enter a username and password.');
+        }
+
+        // Persist form data
+        DipStorage.setConnectionHostname(hostname);
+        DipStorage.setConnectionPort(port);
+        DipStorage.setConnectionUsername(username);
+
+        this.setState({connecting: true});
+        page.info('Connecting...');
+
         if (this.connection) {
             this.connection.currentConnectionProcessing.stop();
         }
-        this.connection = new Connection(data.hostname, data.port, window.location.protocol.toLowerCase() === 'https:');
+
+        this.connection = new Connection(hostname, port, window.location.protocol.toLowerCase() === 'https:');
         this.connection.onReconnectionError = page.onReconnectionError;
-        // Page is passed as logger object (with methods info(), error(), success()) when connecting.
+
         this.connection.connect(page)
             .then(() => {
                 page.connection = this.connection;
                 this.connection = null;
-                page.success(`Successfully connected to server ${data.username}:${data.port}`);
-                page.connection.authenticate(data.username, data.password)
+                page.success(`Connected to ${hostname}:${port}`);
+                page.connection.authenticate(username, password)
                     .then((channel) => {
                         page.channel = channel;
                         return channel.getAvailableMaps();
@@ -58,36 +62,129 @@ export class ContentConnection extends React.Component {
                         const userGameIndices = DipStorage.getUserGames(page.channel.username);
                         if (userGameIndices && userGameIndices.length) {
                             return page.channel.getGamesInfo({games: userGameIndices});
-                        } else {
-                            return null;
                         }
+                        return null;
                     })
                     .then((gamesInfo) => {
                         if (gamesInfo) {
-                            page.success('Found ' + gamesInfo.length + ' user games.');
                             page.updateMyGames(gamesInfo);
                         }
-                        page.loadGames({success: `Account ${data.username} connected.`});
+                        page.loadGames({success: `Signed in as ${username}`});
                     })
                     .catch((error) => {
-                        page.error('Error while authenticating: ' + error + ' Please re-try.');
+                        this.setState({connecting: false});
+                        page.error('Authentication failed: ' + error);
                     });
             })
             .catch((error) => {
-                page.error('Error while connecting: ' + error + ' Please re-try.');
+                this.setState({connecting: false});
+                page.error('Connection failed: ' + error);
             });
     }
 
     render() {
-        const title = 'Connection';
+        const {hostname, port, username, password, showServer, connecting} = this.state;
+
         return (
-            <main>
+            <div className="login-root">
                 <Helmet>
-                    <title>{title} | Diplomacy</title>
+                    <title>Sign In | Diplomacy</title>
                 </Helmet>
-                <Navigation title={title}/>
-                <ConnectionForm onSubmit={this.onSubmit}/>
-            </main>
+
+                {/* Background grid effect */}
+                <div className="login-bg">
+                    <div className="login-grid" />
+                </div>
+
+                <div className="login-container">
+                    {/* Logo / branding */}
+                    <div className="login-brand">
+                        <div className="login-title">DIPLOMACY</div>
+                        <div className="login-subtitle">Command Center</div>
+                    </div>
+
+                    {/* Login card */}
+                    <div className="login-card">
+                        <form onSubmit={this.onSubmit}>
+                            <div className="login-field">
+                                <label className="login-label" htmlFor="username">USERNAME</label>
+                                <input
+                                    className="login-input"
+                                    type="text"
+                                    id="username"
+                                    value={username}
+                                    onChange={e => this.setState({username: e.target.value})}
+                                    autoFocus
+                                    autoComplete="username"
+                                    placeholder="Enter username"
+                                />
+                            </div>
+
+                            <div className="login-field">
+                                <label className="login-label" htmlFor="password">PASSWORD</label>
+                                <input
+                                    className="login-input"
+                                    type="password"
+                                    id="password"
+                                    value={password}
+                                    onChange={e => this.setState({password: e.target.value})}
+                                    autoComplete="current-password"
+                                    placeholder="Enter password"
+                                />
+                            </div>
+
+                            {/* Server settings toggle */}
+                            <div className="login-server-toggle"
+                                 onClick={() => this.setState({showServer: !showServer})}>
+                                <span className="login-server-arrow">{showServer ? '\u25BC' : '\u25B6'}</span>
+                                Server Settings
+                            </div>
+
+                            {showServer && (
+                                <div className="login-server-fields">
+                                    <div className="login-field login-field-inline">
+                                        <label className="login-label" htmlFor="hostname">HOST</label>
+                                        <input
+                                            className="login-input"
+                                            type="text"
+                                            id="hostname"
+                                            value={hostname}
+                                            onChange={e => this.setState({hostname: e.target.value})}
+                                        />
+                                    </div>
+                                    <div className="login-field login-field-inline">
+                                        <label className="login-label" htmlFor="port">PORT</label>
+                                        <input
+                                            className="login-input"
+                                            type="number"
+                                            id="port"
+                                            value={port}
+                                            onChange={e => this.setState({port: parseInt(e.target.value) || 8432})}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            <button className="login-submit" type="submit" disabled={connecting}>
+                                {connecting ? (
+                                    <span className="login-submit-loading">
+                                        <span className="login-spinner" />
+                                        Connecting...
+                                    </span>
+                                ) : 'Sign In'}
+                            </button>
+                        </form>
+
+                        <div className="login-hint">
+                            New accounts are created automatically on first sign-in.
+                        </div>
+                    </div>
+
+                    <div className="login-footer">
+                        Diplomacy AI Platform
+                    </div>
+                </div>
+            </div>
         );
     }
 

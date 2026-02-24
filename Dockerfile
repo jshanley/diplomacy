@@ -1,8 +1,8 @@
 # Stage 1: Build the React web UI
-FROM node:14-alpine AS web-builder
+FROM node:22-alpine AS web-builder
 WORKDIR /app/web
 COPY diplomacy/web/package.json diplomacy/web/package-lock.json* ./
-RUN npm install --legacy-peer-deps
+RUN npm install
 COPY diplomacy/web/ ./
 # The web src has a symlink at src/diplomacy/maps -> ../../../maps/
 # which doesn't resolve in Docker. Copy the actual maps directory.

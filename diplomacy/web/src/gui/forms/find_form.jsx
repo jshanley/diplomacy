@@ -47,7 +47,7 @@ export class FindForm extends React.Component {
                 )}
                 {Forms.createRow(
                     Forms.createColLabel('status', 'status:'),
-                    (<select className={'form-control custom-select'}
+                    (<select className={'form-select'}
                              id={'status'} value={Forms.getValue(this.state, 'status')} onChange={onChange}>
                         {Forms.createSelectOptions(STRINGS.ALL_GAME_STATUSES, true)}
                     </select>)

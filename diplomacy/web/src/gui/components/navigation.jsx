@@ -30,25 +30,25 @@ export class Navigation extends React.Component {
                     </div>
                     <div className={'col-sm-1'}>
                         {(!hasNavigation && (
-                            <div className={'float-right'}>
+                                <div className={'float-end'}>
                                 <strong>
-                                    <u className={'mr-2'}>{this.props.username}</u>
+                                    <u className={'me-2'}>{this.props.username}</u>
                                     <Octicon icon={Person}/>
                                 </strong>
                             </div>
                         )) || (
-                            <div className="dropdown float-right">
+                            <div className="dropdown float-end">
                                 <button className="btn btn-secondary dropdown-toggle" type="button"
-                                        id="dropdownMenuButton" data-toggle="dropdown"
+                                        id="dropdownMenuButton" data-bs-toggle="dropdown"
                                         aria-haspopup="true" aria-expanded="false">
                                     {(this.props.username && (
                                         <span>
-                                                <u className={'mr-2'}>{this.props.username}</u>
+                                                <u className={'me-2'}>{this.props.username}</u>
                                                 <Octicon icon={Person}/>
                                             </span>
                                     )) || 'Menu'}
                                 </button>
-                                <div className="dropdown-menu dropdown-menu-right"
+                                <div className="dropdown-menu dropdown-menu-end"
                                      aria-labelledby="dropdownMenuButton">
                                     {this.props.navigation.map((nav, index) => {
                                         const navTitle = nav[0];

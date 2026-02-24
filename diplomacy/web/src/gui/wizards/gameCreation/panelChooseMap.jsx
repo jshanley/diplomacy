@@ -19,9 +19,16 @@ import {Maps} from "./mapList";
 import {FancyBox} from "../../components/fancyBox";
 import PropTypes from "prop-types";
 
+const svgModules = import.meta.glob('../../../diplomacy/maps/svg/*.svg', { eager: true, query: '?url', import: 'default' });
+
+function getSvgUrl(name) {
+    const key = `../../../diplomacy/maps/svg/${name}.svg`;
+    return svgModules[key] || '';
+}
+
 export class PanelChooseMap extends React.Component {
     render() {
-        const mapImg = require(`../../../diplomacy/maps/svg/${this.props.params.map.svgName()}.svg`);
+        const mapImg = getSvgUrl(this.props.params.map.svgName());
         const mapEntries = [];
         let count = 0;
         for (let mapInfo of Maps) {
@@ -30,7 +37,7 @@ export class PanelChooseMap extends React.Component {
                 mapEntries.push(
                     <div key={count} className="mb-1 d-flex flex-row">
                         <button type="button"
-                                className="btn btn-secondary btn-sm flex-grow-1 mr-1"
+                                className="btn btn-secondary btn-sm flex-grow-1 me-1"
                                 onMouseOver={() => this.props.onUpdateParams({map: mapInfo})}
                                 onClick={() => this.props.forward()}>
                             {mapInfo.title}
@@ -48,15 +55,15 @@ export class PanelChooseMap extends React.Component {
                     <div key={count}>
                         <div className="mb-1 d-flex flex-row">
                             <button type="button"
-                                    className="btn btn-secondary btn-sm flex-grow-1 mr-1"
+                                    className="btn btn-secondary btn-sm flex-grow-1 me-1"
                                     onMouseOver={() => this.props.onUpdateParams({map: defaultVariant})}
                                     onClick={() => this.props.forward()}>
                                 {mapInfo.title} ({defaultVariant.title})
                             </button>
                             <button type="button"
                                     className="btn btn-outline-secondary btn-sm collapsed"
-                                    data-toggle="collapse"
-                                    data-target={`#${dropDownID}`}
+                                    data-bs-toggle="collapse"
+                                    data-bs-target={`#${dropDownID}`}
                                     aria-expanded={false}
                                     aria-controls={dropDownID}>
                                 <span className="unroll"><strong>+</strong></span>
@@ -72,7 +79,7 @@ export class PanelChooseMap extends React.Component {
                                         views.push(
                                             <div key={variantInfo.name} className="mb-1">
                                                 <button type="button"
-                                                        className="btn btn-outline-secondary btn-sm btn-block"
+                                                        className="btn btn-outline-secondary btn-sm w-100"
                                                         onMouseOver={() => this.props.onUpdateParams({map: variantInfo})}
                                                         onClick={() => this.props.forward()}>
                                                     {variantInfo.title}
@@ -92,7 +99,7 @@ export class PanelChooseMap extends React.Component {
             <FancyBox title={'Choose a map'} onClose={this.props.cancel}>
                 <div className="row panel-choose-map">
                     <div className="col-md">
-                        <div className="map-list p-1 ml-0 ml-sm-1">
+                        <div className="map-list p-1 ms-0 ms-sm-1">
                             {mapEntries}
                         </div>
                     </div>

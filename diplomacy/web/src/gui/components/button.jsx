@@ -44,7 +44,7 @@ export class Button extends React.Component {
     render() {
         return (
             <button
-                className={`btn btn-${this.props.color || 'secondary'}` + (this.props.large ? ' btn-block' : '') + (this.props.small ? ' btn-sm' : '')}
+                className={`btn btn-${this.props.color || 'secondary'}` + (this.props.large ? ' w-100' : '') + (this.props.small ? ' btn-sm' : '')}
                 disabled={this.props.disabled}
                 onClick={this.onClick}>
                 <strong>{this.props.title}</strong>

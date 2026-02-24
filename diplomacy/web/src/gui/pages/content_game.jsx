@@ -43,14 +43,11 @@ import {Button} from "../components/button";
 import {saveGameToDisk} from "../utils/saveGameToDisk";
 import {Game} from '../../diplomacy/engine/game';
 import {PowerOrdersActionBar} from "../components/power_orders_actions_bar";
-import {SvgStandard} from "../maps/standard/SvgStandard";
-import {SvgAncMed} from "../maps/ancmed/SvgAncMed";
-import {SvgModern} from "../maps/modern/SvgModern";
-import {SvgPure} from "../maps/pure/SvgPure";
+import {getMapComponent} from "../utils/map_components";
 import {MapData} from "../utils/map_data";
 import {Queue} from "../../diplomacy/utils/queue";
 
-const HotKey = require('react-shortcut');
+import HotKey from 'react-shortcut';
 
 /* Order management in game page.
  * When editing orders locally, we have to compare it to server orders
@@ -80,20 +77,7 @@ const PRETTY_ROLES = {
     [STRINGS.OBSERVER_TYPE]: 'Observer'
 };
 
-const MAP_COMPONENTS = {
-    ancmed: SvgAncMed,
-    standard: SvgStandard,
-    modern: SvgModern,
-    pure: SvgPure
-};
-
-function getMapComponent(mapName) {
-    for (let rootMap of Object.keys(MAP_COMPONENTS)) {
-        if (mapName.indexOf(rootMap) === 0)
-            return MAP_COMPONENTS[rootMap];
-    }
-    throw new Error(`Un-implemented map: ${mapName}`);
-}
+// getMapComponent imported from ../utils/map_components
 
 function noPromise() {
     return new Promise(resolve => resolve());
@@ -1047,27 +1031,27 @@ export class ContentGame extends React.Component {
 
     __form_phases(pastPhases, phaseIndex) {
         return (
-            <form key={1} className="form-inline mb-4">
-                <div className="custom-control-inline">
+            <form key={1} className="d-flex align-items-center mb-4">
+                <div className="d-inline-flex me-2">
                     <Button title={UTILS.html.UNICODE_LEFT_ARROW} onClick={this.onDecrementPastPhase} pickEvent={true}
                             disabled={phaseIndex === 0}/>
                 </div>
-                <div className="custom-control-inline">
-                    <select className="custom-select"
+                <div className="d-inline-flex me-2">
+                    <select className="form-select"
                             id="select-past-phase"
                             value={phaseIndex}
                             onChange={this.onChangePastPhase}>
                         {pastPhases.map((phaseName, index) => <option key={index} value={index}>{phaseName}</option>)}
                     </select>
                 </div>
-                <div className="custom-control-inline">
+                <div className="d-inline-flex me-2">
                     <Button title={UTILS.html.UNICODE_RIGHT_ARROW} onClick={this.onIncrementPastPhase} pickEvent={true}
                             disabled={phaseIndex === pastPhases.length - 1}/>
                 </div>
-                <div className="custom-control custom-control-inline custom-checkbox">
-                    <input className="custom-control-input" id="show-orders" type="checkbox"
+                <div className="form-check d-inline-flex align-items-center">
+                    <input className="form-check-input" id="show-orders" type="checkbox"
                            checked={this.state.historyShowOrders} onChange={this.onChangeShowPastOrders}/>
-                    <label className="custom-control-label" htmlFor="show-orders">Show orders</label>
+                    <label className="form-check-label ms-1" htmlFor="show-orders">Show orders</label>
                 </div>
             </form>
         );
@@ -1285,22 +1269,22 @@ export class ContentGame extends React.Component {
         }
 
         const navAfterTitle = (
-            <form className="form-inline form-current-power">
+            <form className="d-inline-flex align-items-center form-current-power">
                 {(controllablePowers.length === 1 &&
                     <span className="power-name">{controllablePowers[0]}</span>) || (
-                    <div className="custom-control custom-control-inline">
-                        <label className="sr-only" htmlFor="current-power">power</label>
-                        <select className="form-control custom-select custom-control-inline" id="current-power"
+                    <div className="d-inline-flex me-2">
+                        <label className="visually-hidden" htmlFor="current-power">power</label>
+                        <select className="form-select" id="current-power"
                                 value={currentPowerName} onChange={this.onChangeCurrentPower}>
                             {controllablePowers.map(
                                 powerName => <option key={powerName} value={powerName}>{powerName}</option>)}
                         </select>
                     </div>
                 )}
-                <div className="custom-control custom-control-inline custom-checkbox">
-                    <input className="custom-control-input" id="show-abbreviations" type="checkbox"
+                <div className="form-check d-inline-flex align-items-center">
+                    <input className="form-check-input" id="show-abbreviations" type="checkbox"
                            checked={this.state.showAbbreviations} onChange={this.onChangeShowAbbreviations}/>
-                    <label className="custom-control-label" htmlFor="show-abbreviations">Show abbreviations</label>
+                    <label className="form-check-label ms-1" htmlFor="show-abbreviations">Show abbreviations</label>
                 </div>
             </form>
         );

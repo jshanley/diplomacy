@@ -65,7 +65,7 @@ export class PanelChooseSettings extends React.Component {
                         <div className="form-group row align-items-center mb-2">
                             <label className="col-md col-form-label" htmlFor="deadline">Deadline</label>
                             <div className="col-md">
-                                <select id="deadline" className="custom-select custom-select-sm"
+                                <select id="deadline" className="form-select form-select-sm"
                                         value={this.props.params.deadline}
                                         onChange={this.onSelectDeadline}>
                                     {DEADLINES.map((deadline, index) => (
@@ -93,22 +93,22 @@ export class PanelChooseSettings extends React.Component {
                                        onChange={this.onSetGameID}/>
                             </div>
                         </div>
-                        <div className="custom-control custom-checkbox mb-5">
-                            <input type="checkbox" className="custom-control-input" id="no-press"
+                        <div className="form-check mb-5">
+                            <input type="checkbox" className="form-check-input" id="no-press"
                                    checked={this.props.params.no_press} onChange={this.onCheckNoPress}/>
-                            <label className="custom-control-label" htmlFor="no-press">No messages allowed</label>
+                            <label className="form-check-label" htmlFor="no-press">No messages allowed</label>
                         </div>
                     </form>
                 </div>
                 <div className="row">
                     <div className="col-sm">
-                        <button type="button" className="btn btn-secondary btn-sm btn-block"
+                        <button type="button" className="btn btn-secondary btn-sm w-100"
                                 onClick={() => this.props.backward()}>
                             <Octicon icon={ArrowLeft}/>
                         </button>
                     </div>
                     <div className="col-sm">
-                        <button type="button" className="btn btn-success btn-sm btn-block inline"
+                        <button type="button" className="btn btn-success btn-sm w-100 inline"
                                 onClick={() => this.props.forward()}>
                             <strong>create the game</strong>
                         </button>

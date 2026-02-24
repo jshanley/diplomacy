@@ -1,41 +1,28 @@
 {
-  "name": "web",
-  "version": "0.1.0",
-  "homepage": ".",
+  "name": "diplomacy-web",
+  "version": "0.2.0",
   "private": true,
-  "dependencies": {
-    "@primer/octicons-react": "^9.1.1",
-    "bootstrap": "^4.3.1",
-    "jquery": "^3.4.1",
-    "popper.js": "^1.15.0",
-    "prop-types": "^15.7.2",
-    "react": "^16.8.6",
-    "react-confirm-alert": "^2.4.1",
-    "react-dom": "^16.8.6",
-    "react-helmet": "^5.2.1",
-    "react-scripts": "3.0.1",
-    "react-scrollchor": "^6.0.0",
-    "react-shortcut": "^1.0.6"
-  },
+  "type": "module",
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test --env=jsdom",
-    "eject": "react-scripts eject"
+    "dev": "vite",
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@popperjs/core": "^2.11.8",
+    "@primer/octicons-react": "^9.6.0",
+    "bootstrap": "^5.3.3",
+    "prop-types": "^15.8.1",
+    "react": "^18.3.1",
+    "react-confirm-alert": "^3.0.6",
+    "react-dom": "^18.3.1",
+    "react-helmet": "^6.1.0",
+    "react-scrollchor": "^6.0.0",
+    "react-shortcut": "^2.0.9"
   },
   "devDependencies": {
-    "eslint-plugin-react": "^7.14.2"
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0"
   }
 }

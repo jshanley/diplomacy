@@ -21,7 +21,7 @@ import {STRINGS} from "../../diplomacy/utils/strings";
 import PropTypes from "prop-types";
 import {Power} from "../../diplomacy/engine/power";
 
-const HotKey = require('react-shortcut');
+import HotKey from 'react-shortcut';
 
 export class PowerOrderCreationForm extends React.Component {
     constructor(props) {
@@ -43,7 +43,7 @@ export class PowerOrderCreationForm extends React.Component {
             });
         };
         let title = '';
-        let titleClass = 'mr-4';
+        let titleClass = 'me-4';
         const header = [];
         const votes = [];
         if (this.props.orderTypes.length) {
@@ -65,7 +65,7 @@ export class PowerOrderCreationForm extends React.Component {
         }
 
         if (this.props.role !== STRINGS.OMNISCIENT_TYPE) {
-            votes.push(<strong key={0} className={'ml-4 mr-2'}>Vote for draw:</strong>);
+            votes.push(<strong key={0} className={'ms-4 me-2'}>Vote for draw:</strong>);
             switch (this.props.power.vote) {
                 case 'yes':
                     votes.push(Forms.createButton('no', () => this.props.onVote('no'), 'danger'));
@@ -89,7 +89,7 @@ export class PowerOrderCreationForm extends React.Component {
         return (
             <div>
                 <div><strong key={'title'} className={titleClass}>{title}</strong></div>
-                <form className={'form-inline power-actions-form'}>
+                <form className={'d-flex flex-wrap align-items-center power-actions-form'}>
                     {header}
                     {Forms.createButton(
                         (this.props.power.wait ? 'no wait' : 'wait'),

@@ -26,7 +26,7 @@ export class FancyBox extends React.Component {
             <div className="fancy-box">
                 <div className="fancy-bar p-1 d-flex flex-row">
                     <div
-                        className="flex-grow-1 fancy-title d-flex flex-column justify-content-center pr-0 pr-sm-1">{this.props.title}</div>
+                        className="flex-grow-1 fancy-title d-flex flex-column justify-content-center pe-0 pe-sm-1">{this.props.title}</div>
                     <div className="fancy-button">
                         <Button title={TIMES} color={'danger'} onClick={this.props.onClose}/>
                     </div>

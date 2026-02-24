@@ -14,16 +14,15 @@
 //  You should have received a copy of the GNU Affero General Public License along
 //  with this program.  If not, see <https://www.gnu.org/licenses/>.
 // ==============================================================================
-import $ from "jquery";
 import {STRINGS} from "../../diplomacy/utils/strings";
 import {Game} from "../../diplomacy/engine/game";
 
 export function loadGameFromDisk() {
     return new Promise((onLoad, onError) => {
-        const input = $(document.createElement('input'));
-        input.attr("type", "file");
-        input.trigger('click');
-        input.change(event => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.click();
+        input.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (!file.name.match(/\.json$/i)) {
                 onError(`Invalid JSON filename ${file.name}`);

@@ -23,7 +23,7 @@ export class PowerOrdersActionBar extends React.Component {
     render() {
         return (
             <Bar className={'p-2'}>
-                <strong className={'mr-4'}>Orders:</strong>
+                <strong className={'me-4'}>Orders:</strong>
                 <Button title={'reset'} onClick={this.props.onReset}/>
                 <Button title={'delete all'} onClick={this.props.onDeleteAll}/>
                 <Button color={'primary'} title={'update'} onClick={this.props.onUpdate}/>

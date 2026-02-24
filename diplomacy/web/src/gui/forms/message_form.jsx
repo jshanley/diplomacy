@@ -35,7 +35,7 @@ export class MessageForm extends React.Component {
         return (
             <form>
                 <div className={'form-group'}>
-                    {Forms.createLabel('message', '', 'sr-only')}
+                    {Forms.createLabel('message', '', 'visually-hidden')}
                     <textarea id={'message'} className={'form-control'}
                               value={Forms.getValue(this.state, 'message')} onChange={onChange}/>
                 </div>
