@@ -47,6 +47,7 @@ setup(name='diplomacy',
       install_requires=[
           'bcrypt',
           'coloredlogs',
+          'PyJWT',
           'python-dateutil',
           'pytz',
           'tornado>=5.0',
