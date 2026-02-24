@@ -79,11 +79,14 @@ from diplomacy.communication import notifications
 from diplomacy.daide.server import Server as DaideServer
 from diplomacy.server.connection_handler import ConnectionHandler
 from diplomacy.server.notifier import Notifier
+from diplomacy.server.player_log import PlayerLog
 from diplomacy.server.scheduler import Scheduler
 from diplomacy.server.server_game import ServerGame
 from diplomacy.server.users import Users
 from diplomacy.engine.map import Map
 from diplomacy.utils import common, exceptions, strings, constants
+from diplomacy.utils.token import create_token, generate_secret_key, decode_token
+from diplomacy.server.http_api import get_api_routes
 
 LOGGER = logging.getLogger(__name__)
 
@@ -198,7 +201,8 @@ class Server:
     __slots__ = ['data_path', 'games_path', 'available_maps', 'maps_mtime', 'notifications',
                  'games_scheduler', 'allow_registrations', 'max_games', 'remove_canceled_games', 'users', 'games',
                  'daide_servers', 'backup_server', 'backup_games', 'backup_delay_seconds', 'ping_seconds',
-                 'interruption_handler', 'backend', 'games_with_dummy_powers', 'dispatched_dummy_powers']
+                 'interruption_handler', 'backend', 'games_with_dummy_powers', 'dispatched_dummy_powers',
+                 'secret_key', 'player_log']
 
     # Servers cache.
     __cache__ = {}  # {absolute path of working folder => Server}
@@ -318,11 +322,35 @@ class Server:
         """
         return os.path.join(ensure_path(self.data_path), 'server.json')
 
+    def _get_secret_key_filename(self):
+        """ Return path to server secret key file. """
+        return os.path.join(ensure_path(self.data_path), 'secret.key')
+
+    def _load_secret_key(self):
+        """ Load or generate the JWT signing key. """
+        key_filename = self._get_secret_key_filename()
+        if os.path.exists(key_filename):
+            with open(key_filename, 'rb') as key_file:
+                self.secret_key = key_file.read()
+            LOGGER.info('Loaded JWT secret key.')
+        else:
+            self.secret_key = generate_secret_key()
+            with open(key_filename, 'wb') as key_file:
+                key_file.write(self.secret_key)
+            LOGGER.info('Generated new JWT secret key.')
+
     def _load(self):
         """ Load database from disk. """
         LOGGER.info("Loading database.")
         ensure_path(self.data_path)                                 # <server dir>/data
         ensure_path(self.games_path)                                # <server dir>/data/games
+
+        # Load or generate JWT secret key.
+        self._load_secret_key()
+
+        # Initialize player log storage.
+        self.player_log = PlayerLog(self.data_path)
+
         server_data_filename = self._get_server_data_filename()     # <server dir>/data/server.json
         if os.path.exists(server_data_filename):
             LOGGER.info("Loading server.json.")
@@ -340,6 +368,10 @@ class Server:
             LOGGER.info("Creating server.json.")
             self.users = Users()
             self.backup_now(force=True)
+
+        # Provide the secret key to Users for JWT operations.
+        self.users.set_secret_key(self.secret_key)
+
         # Add default accounts.
         for (username, password) in (
                 ('admin', 'password'),
@@ -427,6 +459,9 @@ class Server:
             return True
 
         # Game was processed normally.
+        # Log the completed phase for each player.
+        self._log_phase_for_players(server_game, previous_phase_data)
+
         # Send game updates to powers, observers and omniscient observers.
         yield notifier.notify_game_processed(server_game, previous_phase_data, current_phase_data)
 
@@ -436,6 +471,19 @@ class Server:
 
         # Game must be stopped if not active.
         return not server_game.is_game_active
+
+    def _log_phase_for_players(self, server_game, phase_data):
+        """ Append the completed phase data to each player's log, filtered per role.
+
+            :param server_game: the game that was processed
+            :param phase_data: the GamePhaseData for the just-completed phase
+            :type server_game: ServerGame
+        """
+        for power in server_game.powers.values():
+            controller = power.get_controller()
+            if controller and controller not in (strings.DUMMY, strings.OBSERVER_TYPE):
+                filtered = server_game.filter_phase_data(phase_data, power.name, False)
+                self.player_log.append_phase(controller, server_game.game_id, filtered.to_dict())
 
     @gen.coroutine
     def _task_save_database(self):
@@ -489,9 +537,35 @@ class Server:
             port = 8432
         if io_loop is None:
             io_loop = tornado.ioloop.IOLoop.instance()
+        # Serve the built React web UI if present.
+        web_build_path = os.path.join(os.path.dirname(diplomacy.settings.PACKAGE_DIR), 'web-build')
         handlers = [
+            # WebSocket endpoint (primary path for game clients)
             tornado.web.url(r"/", ConnectionHandler, {'server': self}),
         ]
+        # HTTP REST API endpoints
+        handlers += get_api_routes(self)
+        LOGGER.info('HTTP API routes registered under /api/')
+
+        if os.path.isdir(web_build_path):
+            LOGGER.info('Serving web UI from %s', web_build_path)
+
+            class SPAHandler(tornado.web.RequestHandler):
+                """ Serve index.html for all /app routes (SPA catch-all). """
+                def get(self, path=None):
+                    with open(os.path.join(web_build_path, 'index.html'), 'r') as f:
+                        self.write(f.read())
+                    self.set_header('Content-Type', 'text/html')
+
+            handlers += [
+                # Serve all built assets (js, css, images) from web-build
+                tornado.web.url(r"/(static/.*)", tornado.web.StaticFileHandler,
+                                {'path': web_build_path}),
+                tornado.web.url(r"/(manifest\.json|favicon\.ico|.*\.png)",
+                                tornado.web.StaticFileHandler, {'path': web_build_path}),
+                # SPA catch-all: serve index.html for /app routes
+                tornado.web.url(r"/app(?:/.*)?", SPAHandler),
+            ]
         settings = {
             'cookie_secret': common.generate_token(),
             'xsrf_cookies': True,
@@ -843,21 +917,12 @@ class Server:
         self.save_data()
 
     def assert_token(self, token, connection_handler):
-        """ Check if given token is associated to an user, check if token is still valid,
-            and link token to given connection handler. If any step failed, raise an exception.
+        """ Verify JWT signature and expiry, and link token to connection handler.
 
-            :param token: token to check
+            :param token: JWT token string to check
             :param connection_handler: connection handler associated to this token
         """
         if not self.users.has_token(token):
-            raise exceptions.TokenException()
-        if self.users.token_is_alive(token):
-            self.users.relaunch_token(token)
-            self.save_data()
-        else:
-            # Logout on server side and raise exception (invalid token).
-            LOGGER.error('Token too old %s', token)
-            self.remove_token(token)
             raise exceptions.TokenException()
         self.users.attach_connection_handler(token, connection_handler)
 
