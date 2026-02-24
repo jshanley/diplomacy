@@ -269,6 +269,16 @@ class DataGamesToPowerNames(UniqueData):
         strings.DATA: parsing.DictType(str, parsing.SequenceType(str))
     }
 
+class DataPlayerHistory(UniqueData):
+    """ Unique data containing player history.
+        When game_id is specified: list of GamePhaseData dicts for that game.
+        When game_id is not specified: list of game ID strings.
+    """
+    __slots__ = []
+    params = {
+        strings.DATA: list  # list of dicts (phase data) or list of strings (game IDs)
+    }
+
 def parse_dict(json_response):
     """ Parse a JSON dictionary expected to represent a response.
         Raise an exception if either:

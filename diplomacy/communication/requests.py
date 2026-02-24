@@ -845,6 +845,34 @@ class Vote(_AbstractGameRequest):
         self.vote = ''
         super(Vote, self).__init__(**kwargs)
 
+class GetPlayerHistory(_AbstractChannelRequest):
+    """ Channel request to retrieve a player's game log — the per-phase data
+        they were allowed to see during past (or current) games.
+
+        :param game_id: (optional) if provided, return phases only for this game.
+            If not provided, return game IDs the player has logs for.
+        :param limit: (optional) max number of phase entries to return.
+        :param offset: (optional) number of entries to skip from the start.
+        :type game_id: str, optional
+        :type limit: int, optional
+        :type offset: int, optional
+        :return:
+
+            - Server: :class:`.DataPlayerHistory`
+    """
+    __slots__ = ['game_id', 'limit', 'offset']
+    params = {
+        strings.GAME_ID: parsing.OptionalValueType(str),
+        strings.LIMIT: parsing.OptionalValueType(int),
+        strings.OFFSET: parsing.DefaultValueType(int, 0),
+    }
+
+    def __init__(self, **kwargs):
+        self.game_id = None
+        self.limit = None
+        self.offset = 0
+        super(GetPlayerHistory, self).__init__(**kwargs)
+
 def parse_dict(json_request):
     """ Parse a JSON dictionary expected to represent a request.
         Raise an exception if parsing failed.

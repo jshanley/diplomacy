@@ -37,6 +37,7 @@ from diplomacy.server.request_manager_utils import (SynchronizedData, verify_req
                                                     assert_game_not_finished)
 from diplomacy.utils import exceptions, strings, constants, export
 from diplomacy.utils.common import hash_password
+from diplomacy.utils.token import create_token
 from diplomacy.utils.constants import OrderSettings
 from diplomacy.utils.game_phase_data import GamePhaseData
 
@@ -1085,7 +1086,8 @@ def on_sign_in(server, request, connection_handler):
     elif not server.users.has_user(username, password):
         raise exceptions.UserException()
 
-    token = server.users.connect_user(username, connection_handler)
+    token = create_token(server.secret_key, username)
+    server.users.connect_user(username, connection_handler, token)
     server.save_data()
     return responses.DataToken(data=token, request_id=request.request_id)
 
@@ -1201,6 +1203,27 @@ def on_vote(server, request, connection_handler):
     server.save_game(level.game)
 
 
+def on_get_player_history(server, request, connection_handler):
+    """ Manage request GetPlayerHistory.
+
+        :param server: server which receives the request.
+        :param request: request to manage.
+        :param connection_handler: connection handler from which the request was sent.
+        :return: DataPlayerHistory
+        :type server: diplomacy.Server
+        :type request: diplomacy.communication.requests.GetPlayerHistory
+    """
+    from diplomacy.server.request_manager_utils import verify_request
+    verify_request(server, request, connection_handler)
+    username = server.users.get_name(request.token)
+    if request.game_id:
+        data = server.player_log.get_game_log(username, request.game_id,
+                                               limit=request.limit, offset=request.offset)
+    else:
+        data = server.player_log.list_game_ids(username)
+    return responses.DataPlayerHistory(data=data, request_id=request.request_id)
+
+
 # Mapping dictionary from request class to request handler function.
 MAPPING = {
     requests.ClearCenters: on_clear_centers,
@@ -1215,6 +1238,7 @@ MAPPING = {
     requests.GetDummyWaitingPowers: on_get_dummy_waiting_powers,
     requests.GetGamesInfo: on_get_games_info,
     requests.GetPhaseHistory: on_get_phase_history,
+    requests.GetPlayerHistory: on_get_player_history,
     requests.GetPlayablePowers: on_get_playable_powers,
     requests.JoinGame: on_join_game,
     requests.JoinPowers: on_join_powers,
