@@ -18,13 +18,17 @@
 
 import React from "react";
 import {ContentConnection} from "./content_connection";
+import {ContentLanding} from "./content_landing";
+import {ContentLobby} from "./content_lobby";
 import {UTILS} from "../../diplomacy/utils/utils";
 import {Diplog} from "../../diplomacy/utils/diplog";
 import {DipStorage} from "../utils/dipStorage";
 import {PageContext} from "../components/page_context";
 import {ContentGames} from "./content_games";
+import {ContentDashboard} from "./content_dashboard";
 import {loadGameFromDisk} from "../utils/load_game_from_disk";
 import {ContentGame} from "./content_game";
+import {api} from "../utils/api";
 import {confirmAlert} from 'react-confirm-alert';
 import 'react-confirm-alert/src/react-confirm-alert.css';
 
@@ -57,6 +61,46 @@ export class Page extends React.Component {
         this._remove_from_my_games = this._remove_from_my_games.bind(this);
         this._remove_from_games = this._remove_from_games.bind(this);
         this.onReconnectionError = this.onReconnectionError.bind(this);
+        this._onHashChange = this._onHashChange.bind(this);
+    }
+
+    componentDidMount() {
+        window.addEventListener('hashchange', this._onHashChange);
+        // Check hash on initial load for deep linking
+        this._onHashChange();
+    }
+
+    componentWillUnmount() {
+        window.removeEventListener('hashchange', this._onHashChange);
+    }
+
+    _onHashChange() {
+        const hash = window.location.hash;
+        if (!hash) return;
+
+        // Match #/lobby/{CODE} or #/game/{CODE}
+        const lobbyMatch = hash.match(/^#\/(?:lobby|game)\/([A-Z0-9]{4})$/i);
+        if (lobbyMatch && api.isLoggedIn()) {
+            const code = lobbyMatch[1].toUpperCase();
+            this._resumeLobby(code);
+        }
+    }
+
+    async _resumeLobby(code) {
+        // Try to fetch lobby state and resume
+        try {
+            const data = await api.lobbyState(code);
+            if (!data.lobby) return;
+            // Find our player in the lobby
+            const username = api.getUsername();
+            const me = data.lobby.players.find(p => p.username === username);
+            if (me) {
+                this.loadLobby(data.code || code, me, data.lobby);
+            }
+        } catch (err) {
+            // Lobby not found or other error — stay on landing
+            console.warn('Failed to resume lobby from hash:', err.message);
+        }
     }
 
     static wrapMessage(message) {
@@ -70,7 +114,16 @@ export class Page extends React.Component {
     }
 
     static defaultPage() {
-        return <ContentConnection/>;
+        return <ContentLanding/>;
+    }
+
+    loadLobby(code, player, lobby) {
+        window.location.hash = `#/game/${code}`;
+        this.setState({
+            name: 'lobby',
+            body: <ContentLobby code={code} player={player} lobby={lobby} />,
+            error: null, info: null, success: null,
+        });
     }
 
     setState(state) {
@@ -117,6 +170,14 @@ export class Page extends React.Component {
         return this.load(
             'games',
             <ContentGames myGames={this.getMyGames()} gamesFound={this.getGamesFound()}/>,
+            messages
+        );
+    }
+
+    loadDashboard(messages) {
+        return this.load(
+            'dashboard',
+            <ContentDashboard/>,
             messages
         );
     }
@@ -344,9 +405,10 @@ export class Page extends React.Component {
         const successMessage = this.state.success || '-';
         const infoMessage = this.state.info || '-';
         const errorMessage = this.state.error || '-';
+        const isDark = this.state.name === 'dashboard' || this.state.name === 'lobby' || !this.state.name;
         return (
             <PageContext.Provider value={this}>
-                <div className="page container-fluid" id={this.state.contentName}>
+                <div className={`page container-fluid ${isDark ? 'page-dark' : ''}`} id={this.state.contentName}>
                     <div className={'top-msg row'}>
                         <div title={successMessage !== '-' ? successMessage : ''}
                              className={'col-sm-4 msg success ' + (this.state.success ? 'with-msg' : 'no-msg')}
