@@ -636,10 +636,555 @@ class ProcessHandler(_BaseApiHandler):
         })
 
 
+class HistoryHandler(_BaseApiHandler):
+    """GET /api/games/{id}/history — phase history for a game."""
+
+    def get(self, game_id):
+        token, username = self._require_token()
+        if not token:
+            return
+        if not self.server.has_game_id(game_id):
+            return self._error(404, f'Game "{game_id}" not found')
+        game = self.server.get_game(game_id)
+
+        from_phase = self.get_argument('from', None)
+        to_phase = self.get_argument('to', None)
+
+        # Use omniscient role for admin, observer for others
+        is_admin = self.server.users.has_admin(username)
+        role = strings.OMNISCIENT_TYPE if is_admin else strings.OBSERVER_TYPE
+
+        try:
+            phases = game.get_phase_history(from_phase, to_phase, role)
+        except Exception as e:
+            return self._error(400, str(e))
+
+        result = []
+        for phase_data in phases:
+            pd = phase_data.to_dict() if hasattr(phase_data, 'to_dict') else phase_data
+            result.append(pd)
+
+        self._ok({
+            'game_id': game_id,
+            'n_phases': len(result),
+            'phases': result,
+        })
+
+
+class IdentityHandler(_BaseApiHandler):
+    """POST /api/auth/identity — get or create a stable identity.
+
+    No password required. Provide a display_name, get back a JWT.
+    If the username already exists, we issue a fresh token for it.
+    """
+
+    def post(self):
+        body = self._json_body()
+        if body is None:
+            return
+        display_name = body.get('display_name', '').strip()
+        if not display_name:
+            return self._error(400, 'Provide "display_name"')
+        if len(display_name) > 20:
+            return self._error(400, 'Display name must be 20 characters or fewer')
+
+        # Use display_name as both username and password (no real auth)
+        from diplomacy.utils.common import hash_password
+        username = display_name.lower().replace(' ', '_')
+
+        if not self.server.users.has_username(username):
+            self.server.users.add_user(username, hash_password(username))
+
+        token = create_token(self.server.secret_key, username)
+        conn = _EphemeralConnection()
+        self.server.users.connect_user(username, conn, token)
+
+        self._ok({
+            'token': token,
+            'username': username,
+            'display_name': display_name,
+        })
+
+
+class LobbyCreateHandler(_BaseApiHandler):
+    """POST /api/lobby/create — create a new game, get a join code.
+
+    Requires Authorization header with a stable identity token.
+    """
+
+    def post(self):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header. Get a token via POST /api/auth/identity')
+
+        username = self._get_username(token)
+        if not username:
+            return self._error(401, 'Invalid token')
+
+        body = self._json_body()
+        if body is None:
+            return
+        display_name = body.get('display_name', '').strip()
+        if not display_name:
+            return self._error(400, 'Provide "display_name"')
+        if len(display_name) > 20:
+            return self._error(400, 'Display name must be 20 characters or fewer')
+
+        map_name = body.get('map_name', 'standard')
+        assignment = body.get('assignment', 'random')
+
+        try:
+            lobby, player = self.server.lobby_manager.create_game(
+                username, display_name, token,
+                map_name=map_name, assignment=assignment)
+        except Exception as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'code': lobby.code,
+            'player': player.to_dict(),
+            'lobby': lobby.to_dict(),
+        }, status=201)
+
+
+class LobbyJoinHandler(_BaseApiHandler):
+    """POST /api/lobby/join — join a game by code.
+
+    Requires Authorization header with a stable identity token.
+    """
+
+    def post(self):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header. Get a token via POST /api/auth/identity')
+
+        username = self._get_username(token)
+        if not username:
+            return self._error(401, 'Invalid token')
+
+        body = self._json_body()
+        if body is None:
+            return
+        code = body.get('code', '').strip().upper()
+        display_name = body.get('display_name', '').strip()
+
+        if not code or len(code) != 4:
+            return self._error(400, 'Provide a 4-character "code"')
+        if not display_name:
+            return self._error(400, 'Provide "display_name"')
+        if len(display_name) > 20:
+            return self._error(400, 'Display name must be 20 characters or fewer')
+
+        try:
+            lobby, player = self.server.lobby_manager.join_game(
+                code, username, display_name, token)
+        except ValueError as e:
+            return self._error(400, str(e))
+
+        if lobby is None:
+            return self._error(404, f'No game found with code "{code}"')
+
+        self._ok({
+            'code': lobby.code,
+            'player': player.to_dict(),
+            'lobby': lobby.to_dict(),
+        })
+
+
+class LobbyStateHandler(_BaseApiHandler):
+    """GET /api/lobby/{code} — get lobby state (poll for updates)."""
+
+    def get(self, code):
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby:
+            return self._error(404, f'No game found with code "{code}"')
+        self._ok({'lobby': lobby.to_dict()})
+
+
+class LobbyStartHandler(_BaseApiHandler):
+    """POST /api/lobby/{code}/start — host starts the game."""
+
+    def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        username = self._get_username(token)
+        if not username:
+            return self._error(401, 'Invalid token')
+
+        try:
+            lobby = self.server.lobby_manager.start_game(code, username)
+        except ValueError as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'lobby': lobby.to_dict(),
+            'game_id': lobby.game_id,
+        })
+
+
+class LobbyGameStateHandler(_BaseApiHandler):
+    """GET /api/lobby/{code}/game — game state for a lobby player."""
+
+    def _get_player(self, lobby):
+        """Resolve the calling player from their token, by token match or username."""
+        token = self._get_token()
+        if not token:
+            return None
+        # Try token match first
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        # Fall back to username match (handles token refresh)
+        username = self._get_username(token)
+        if username:
+            player = lobby.get_player_by_username(username)
+            if player:
+                player.token = token  # update stored token
+                return player
+        return None
+
+    def get(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby:
+            return self._error(404, f'No game found with code "{code}"')
+        if lobby.status != 'started':
+            return self._error(400, 'Game has not started yet')
+
+        player = self._get_player(lobby)
+        if not player:
+            return self._error(403, 'You are not in this game')
+
+        game = self.server.get_game(lobby.game_id)
+        if not game:
+            return self._error(500, 'Engine game not found')
+
+        power_name = player.power
+        units = game.get_units()
+        centers = game.get_centers()
+
+        powers = {}
+        for pwr_name, power in game.powers.items():
+            controller = power.controller.last_value() if power.controller else None
+            retreats = {}
+            for unit, dests in power.retreats.items():
+                retreats[unit] = dests
+            powers[pwr_name] = {
+                'units': units.get(pwr_name, []),
+                'centers': centers.get(pwr_name, []),
+                'homes': list(power.homes) if power.homes else [],
+                'influence': list(power.influence) if power.influence else [],
+                'retreats': retreats,
+                'is_you': pwr_name == power_name,
+                'controller': controller if controller != strings.DUMMY else None,
+                'order_is_set': power.order_is_set,
+                'wait': power.wait,
+            }
+
+        # Include map info so the client can render the SVG map
+        map_info = self.server.get_map(lobby.map_name)
+
+        self._ok({
+            'code': code,
+            'game_id': lobby.game_id,
+            'map_name': lobby.map_name,
+            'your_power': power_name,
+            'phase': game.get_current_phase(),
+            'status': game.status,
+            'is_done': game.is_game_done,
+            'powers': powers,
+            'map_info': map_info,
+        })
+
+
+class LobbyOrdersHandler(_BaseApiHandler):
+    """
+    GET  /api/lobby/{code}/orders — possible orders for your power
+    POST /api/lobby/{code}/orders — submit orders
+    """
+
+    def _get_player(self, lobby):
+        """Resolve the calling player from their token, by token match or username."""
+        token = self._get_token()
+        if not token:
+            return None
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        username = self._get_username(token)
+        if username:
+            player = lobby.get_player_by_username(username)
+            if player:
+                player.token = token
+                return player
+        return None
+
+    def get(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby or lobby.status != 'started':
+            return self._error(400, 'Game not started')
+
+        player = self._get_player(lobby)
+        if not player:
+            return self._error(403, 'You are not in this game')
+
+        game = self.server.get_game(lobby.game_id)
+        power_name = player.power
+
+        all_possible = game.get_all_possible_orders()
+        all_orderable = game.get_orderable_locations()
+        my_locs = all_orderable.get(power_name, [])
+
+        orders_by_loc = {}
+        for loc in my_locs:
+            loc_orders = all_possible.get(loc, [])
+            if loc_orders:
+                orders_by_loc[loc] = loc_orders
+
+        self._ok({
+            'code': code,
+            'phase': game.get_current_phase(),
+            'power': power_name,
+            'units': game.get_units().get(power_name, []),
+            'centers': game.get_centers().get(power_name, []),
+            'orderable_locations': my_locs,
+            'possible_orders': orders_by_loc,
+            # Full data needed for map-based order building (orders tree)
+            'all_possible_orders': all_possible,
+            'all_orderable_locations': all_orderable,
+        })
+
+    def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby or lobby.status != 'started':
+            return self._error(400, 'Game not started')
+
+        player = self._get_player(lobby)
+        if not player:
+            return self._error(403, 'You are not in this game')
+
+        body = self._json_body()
+        if body is None:
+            return
+
+        orders = body.get('orders', [])
+        wait = body.get('wait', False)
+        power_name = player.power
+
+        game = self.server.get_game(lobby.game_id)
+
+        # Validate orders
+        possible = game.get_all_possible_orders()
+        orderable = game.get_orderable_locations()
+        my_locs = orderable.get(power_name, [])
+
+        all_possible = set()
+        orders_by_loc = {}
+        for loc in my_locs:
+            loc_orders = possible.get(loc, [])
+            if loc_orders:
+                orders_by_loc[loc] = loc_orders
+                all_possible.update(loc_orders)
+
+        valid_orders = []
+        invalid_orders = []
+        for order in orders:
+            if order in all_possible:
+                valid_orders.append(order)
+            else:
+                parts = order.split()
+                loc = parts[1] if len(parts) >= 2 else None
+                suggestion = orders_by_loc.get(loc, [])[:5] if loc else None
+                invalid_orders.append({
+                    'order': order,
+                    'reason': 'Not in possible orders',
+                    'suggestions': suggestion,
+                })
+
+        if invalid_orders:
+            return self._error(400, f'{len(invalid_orders)} invalid order(s)',
+                               details={'invalid_orders': invalid_orders})
+
+        # Submit orders
+        conn = _EphemeralConnection()
+        self._attach_token(token, conn)
+
+        try:
+            req = requests.SetOrders.from_dict({
+                'name': 'set_orders',
+                'request_id': 'lobby',
+                'token': token,
+                'game_id': lobby.game_id,
+                'game_role': power_name,
+                'phase': game.get_current_phase(),
+                'orders': valid_orders,
+                'wait': wait,
+            })
+            result = request_managers.handle_request(self.server, req, conn)
+            from tornado.concurrent import Future
+            if isinstance(result, Future):
+                result.result()
+        except exceptions.DiplomacyException as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'code': code,
+            'power': power_name,
+            'orders_submitted': valid_orders,
+            'wait': wait,
+        })
+
+
+class LobbyProcessHandler(_BaseApiHandler):
+    """POST /api/lobby/{code}/process — host force-processes the game."""
+
+    def _get_player(self, lobby):
+        """Resolve the calling player from their token, by token match or username."""
+        token = self._get_token()
+        if not token:
+            return None
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        username = self._get_username(token)
+        if username:
+            player = lobby.get_player_by_username(username)
+            if player:
+                player.token = token
+                return player
+        return None
+
+    async def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby or lobby.status != 'started':
+            return self._error(400, 'Game not started')
+
+        player = self._get_player(lobby)
+        if not player or not player.is_host:
+            return self._error(403, 'Only the host can force-process')
+
+        game = self.server.get_game(lobby.game_id)
+        old_phase = game.get_current_phase()
+
+        # Use system admin token for processing (player tokens can't be omniscient)
+        admin_token = self.server.lobby_manager._get_system_token()
+        conn = _EphemeralConnection()
+        self._attach_token(admin_token, conn)
+
+        try:
+            game.add_omniscient_token(admin_token)
+            req = requests.ProcessGame.from_dict({
+                'name': 'process_game',
+                'request_id': 'lobby',
+                'token': admin_token,
+                'game_id': lobby.game_id,
+                'game_role': strings.OMNISCIENT_TYPE,
+                'phase': game.get_current_phase(),
+            })
+            result = request_managers.handle_request(self.server, req, conn)
+            from tornado.concurrent import Future
+            if isinstance(result, Future):
+                result.result()
+        except exceptions.DiplomacyException as e:
+            return self._error(400, str(e))
+
+        from tornado import gen
+        await gen.sleep(0.5)
+
+        game = self.server.get_game(lobby.game_id)
+        new_phase = game.get_current_phase()
+
+        self._ok({
+            'code': code,
+            'previous_phase': old_phase,
+            'new_phase': new_phase,
+            'is_done': game.is_game_done,
+        })
+
+
+API_DOCS = """# Diplomacy API
+
+All endpoints return JSON with `{"ok": true, ...}` or `{"ok": false, "error": "..."}`.
+Authenticated endpoints require `Authorization: Bearer <token>`.
+
+## Auth
+
+POST /api/auth/identity
+  Body: {"display_name": "..."}
+  Returns: {token, username, display_name}
+  No password. Creates account if needed.
+
+## Lobby (join by 4-char code)
+
+POST /api/lobby/create         — Create game. Body: {display_name, map_name?, assignment?}. Returns: {code, player, lobby}
+POST /api/lobby/join           — Join game. Body: {code, display_name}. Returns: {code, player, lobby}
+GET  /api/lobby/{code}         — Lobby state (no auth). Returns: {lobby} with status, players list
+POST /api/lobby/{code}/start   — Host starts game. Returns: {lobby, game_id}
+
+## In-Game (after lobby starts)
+
+GET  /api/lobby/{code}/game    — Your game view. Returns: {your_power, phase, status, is_done, powers}
+GET  /api/lobby/{code}/orders  — Possible orders. Returns: {power, orderable_locations, possible_orders}
+POST /api/lobby/{code}/orders  — Submit orders. Body: {orders: ["A PAR - BUR", ...], wait: false}
+POST /api/lobby/{code}/process — Host force-processes phase. Returns: {previous_phase, new_phase, is_done}
+
+## Order Formats
+
+Hold:         A PAR H
+Move:         A PAR - BUR
+Support hold: A PAR S A MAR
+Support move: A PAR S A MAR - BUR
+Convoy:       F NTH C A LON - NWY
+Retreat:      A PAR R BUR
+Disband:      A PAR D
+Build:        A PAR B
+Waive:        WAIVE
+
+## Game Loop
+
+1. GET .../game to check phase and state
+2. GET .../orders to see possible orders for your power
+3. POST .../orders with your chosen orders
+4. Poll .../game until phase changes (host processes manually)
+5. Repeat until is_done is true
+"""
+
+
+class DocsHandler(_BaseApiHandler):
+    """GET /api/docs — plain-text API reference."""
+
+    def get(self):
+        self.set_header('Content-Type', 'text/plain; charset=utf-8')
+        self.set_header('Access-Control-Allow-Origin', '*')
+        self.write(API_DOCS.lstrip())
+
+
 def get_api_routes(server):
     """Return list of Tornado route tuples for the HTTP API."""
     kwargs = {'server': server}
     return [
+        # Docs
+        tornado.web.url(r'/api/docs', DocsHandler, kwargs),
+        # Identity (no-password, Jackbox-style)
+        tornado.web.url(r'/api/auth/identity', IdentityHandler, kwargs),
+        # Legacy auth-based API (kept for backward compat)
         tornado.web.url(r'/api/auth/login', LoginHandler, kwargs),
         tornado.web.url(r'/api/games', GamesListHandler, kwargs),
         tornado.web.url(r'/api/games/([^/]+)', GameHandler, kwargs),
@@ -647,4 +1192,13 @@ def get_api_routes(server):
         tornado.web.url(r'/api/games/([^/]+)/leave', LeaveHandler, kwargs),
         tornado.web.url(r'/api/games/([^/]+)/orders', OrdersHandler, kwargs),
         tornado.web.url(r'/api/games/([^/]+)/process', ProcessHandler, kwargs),
+        tornado.web.url(r'/api/games/([^/]+)/history', HistoryHandler, kwargs),
+        # Lobby API (Jackbox-style join by code)
+        tornado.web.url(r'/api/lobby/create', LobbyCreateHandler, kwargs),
+        tornado.web.url(r'/api/lobby/join', LobbyJoinHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})', LobbyStateHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/start', LobbyStartHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/game', LobbyGameStateHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/orders', LobbyOrdersHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/process', LobbyProcessHandler, kwargs),
     ]

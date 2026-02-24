@@ -202,7 +202,7 @@ class Server:
                  'games_scheduler', 'allow_registrations', 'max_games', 'remove_canceled_games', 'users', 'games',
                  'daide_servers', 'backup_server', 'backup_games', 'backup_delay_seconds', 'ping_seconds',
                  'interruption_handler', 'backend', 'games_with_dummy_powers', 'dispatched_dummy_powers',
-                 'secret_key', 'player_log']
+                 'secret_key', 'player_log', 'lobby_manager']
 
     # Servers cache.
     __cache__ = {}  # {absolute path of working folder => Server}
@@ -350,6 +350,10 @@ class Server:
 
         # Initialize player log storage.
         self.player_log = PlayerLog(self.data_path)
+
+        # Initialize lobby manager.
+        from diplomacy.server.lobby import LobbyManager
+        self.lobby_manager = LobbyManager(self)
 
         server_data_filename = self._get_server_data_filename()     # <server dir>/data/server.json
         if os.path.exists(server_data_filename):
@@ -558,7 +562,13 @@ class Server:
                     self.set_header('Content-Type', 'text/html')
 
             handlers += [
-                # Serve all built assets (js, css, images) from web-build
+                # Serve built assets (Vite outputs to assets/)
+                tornado.web.url(r"/(assets/.*)", tornado.web.StaticFileHandler,
+                                {'path': web_build_path}),
+                # Also serve assets under /app/assets/ for relative path resolution
+                tornado.web.url(r"/app/(assets/.*)", tornado.web.StaticFileHandler,
+                                {'path': web_build_path}),
+                # Legacy CRA structure (static/)
                 tornado.web.url(r"/(static/.*)", tornado.web.StaticFileHandler,
                                 {'path': web_build_path}),
                 tornado.web.url(r"/(manifest\.json|favicon\.ico|.*\.png)",
