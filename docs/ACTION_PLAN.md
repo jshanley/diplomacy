@@ -16,10 +16,11 @@ Everything serves these three modes:
 
 The base engine is working:
 - DATC-compliant game engine (Python, Tornado async, WebSocket)
-- All tests pass (195 total: engine, DATC compliance, JWT, player logs)
+- All tests pass (270+ total: engine, DATC compliance, JWT, player logs, Talk phase)
 - Server runs on `localhost:8432`, web UI at `/app`
 - Python client connects, authenticates, creates games, submits orders
 - Existing web UI has a known crash bug (documented in `known-bugs.md`) — we're building our own UI later
+- **Talk phase engine layer is in place** (Steps 1-2 complete on `feature/talk-phase-engine`)
 
 To verify locally:
 ```bash
@@ -38,38 +39,60 @@ Two tracks can run in parallel. Track B does not depend on Track A.
 
 ### Track A: Negotiation Engine
 
-The existing engine has no Talk phase. Messaging is real-time. The entire structured round system needs to be built from scratch.
+Structured Talk phases with batch message delivery. Steps 1-2 are complete.
 
-**1.1 — Design Talk phase architecture**
-- New phase type in engine (modify `Map.seq`) vs. server-layer wrapper around existing Movement phase
-- Round state machine: OPEN → collecting → CLOSED → DELIVERING → next
-- How rounds interact with the scheduler/deadline system
-- How batch delivery integrates with existing notification system
+**Step 1 — Talk phase type in engine** ✅ DONE
+- Added `'T'` (Talk) as a phase type in `Map.seq` (T-M-R-A-T cycle)
+- `NO_TALK` rule skips Talk phases (default on for backward compat)
+- Engine processes Talk → Movement transition
+- 48 unit tests covering map sequences, phase transitions, serialization
+- Branch: `feature/talk-phase-engine`
 
-**1.2 — Batch message collection**
-- Messages submitted during a round are held, not delivered
-- Message validation: count limits, character limits, language rules
-- Void messages still count against sender's quota
-- Press log generation (metadata only)
+**Step 2 — Server round state machine** ✅ DONE
+- Configurable multi-round Talk phases (`talk_num_rounds`, default 2)
+- Round state machine: `round_open(1..N) → orders_open → phase advance`
+- Ready signaling via existing `SetWaitFlag(wait=False)` — no new request types
+- `talk_round_complete()` checks non-eliminated, controlled powers
+- `ServerGame.process()` intercepts Talk phases, manages round advancement
+- `_process_game` in server.py keeps game scheduled during Talk rounds
+- Serialization round-trips for all talk state fields
+- 27 additional unit tests (75 total Talk tests)
+- Branch: `feature/talk-phase-engine`
 
-**1.3 — Batch delivery**
-- All collected messages for a round deliver simultaneously at close
-- Notifications sent to recipients
-- Configurable processing interval between rounds
+**Step 3 — Batch message collection** ← NEXT
+- New request type or reuse `send_game_message` during Talk rounds
+- Messages submitted during `round_open` are held in `talk_held_messages`, not delivered
+- Message validation: count limits per round, character limits, language rules
+- Void messages (validation failures) still count against sender's quota
+- Config fields: `talk_max_messages_per_round`, `talk_max_chars_per_message`
 
-**1.4 — Round lifecycle**
-- System opens/closes rounds explicitly
-- Configurable: number of rounds, round length, same-round reply rules
-- ORDERS OPEN window after final round closes
-- Full sequence: Talk Round A → deliver → Talk Round B → deliver → Orders Open → Orders Closed → engine processes
+**Step 4 — Batch delivery**
+- When a round closes (`_close_talk_round`), deliver all held messages simultaneously
+- Use existing notification system to push to recipients
+- Clear `talk_held_messages` after delivery
+- Messages delivered between rounds, before next round opens
 
-**1.5 — Public communique support**
+**Step 5 — Client notifications for round changes**
+- Notify clients when round opens/closes/advances
+- Send round number, state, and time remaining
+- Clients need to know when they can send messages vs. when to submit orders
+
+**Step 6 — Timer/deadline integration**
+- Round-specific deadlines (separate from phase deadline)
+- Config: `talk_round_deadline` (seconds per round), `talk_orders_deadline`
+- Auto-advance round when deadline expires (even if not all powers ready)
+- Wire into server scheduler (`_process_game` reschedule with round deadline)
+
+**Step 7 — Public communique support**
 - 1 per game-year per player, separate from private message limits
+- Delivered to ALL players (not just recipients)
 - Configurable: max chars, language, frequency
+- Separate from private message quota
 
-**1.6 — Press log**
-- After each negotiation window: sender, recipient(s), char count, status (DELIVERED/VOID), type (PRIVATE/PUBLIC)
-- Broadcast to all players for information symmetry
+**Step 8 — Press log**
+- After each round closes: sender, recipient(s), char count, status (DELIVERED/VOID), type (PRIVATE/PUBLIC)
+- Broadcast press log to all players for information symmetry
+- Metadata only — no message content revealed
 
 ---
 
@@ -171,23 +194,29 @@ These need both the negotiation engine and the agent framework.
 ## Task Order
 
 ```
-Track A (negotiation):  1.1 -> 1.2 -> 1.3 -> 1.4 -> 1.5 -> 1.6
+Track A (negotiation):  Step 1 ✅ -> Step 2 ✅ -> Step 3 -> Step 4 -> Step 5 -> Step 6 -> Step 7 -> Step 8
 Track B (agents):       2.1 -> 2.2 -> 2.4
-                              ↘ merge ↙
-                        2.3 -> 2.5
-                              ↓
-                   3.1 -> 3.2 -> 4.1 -> 4.2
-                              ↓
-                     5.x (parallel)  6.x (after core is solid)
+                                    ↘ merge ↙
+                              2.3 -> 2.5
+                                    ↓
+                         3.1 -> 3.2 -> 4.1 -> 4.2
+                                    ↓
+                           5.x (parallel)  6.x (after core is solid)
 ```
+
+Track A implementation order rationale:
+- Steps 3+4 (message collection + delivery) are the core negotiation mechanic — do these next
+- Step 5 (client notifications) makes round changes visible — needed before timers make sense
+- Step 6 (timers) adds auto-advance — needed for real gameplay but not for testing
+- Steps 7+8 (communiques + press log) are additive features, can be done last
 
 **Fastest demo (Mode 3, no talking):** 2.1 → 2.4 — can start now.
 
-**Full Mode 3 (with negotiation):** Track A + Track B → 2.3 → 2.5
+**Full Mode 3 (with negotiation):** Track A (Steps 3-6 minimum) + Track B → 2.3 → 2.5
 
 **Full Mode 2 (humans + agents):** Above + 3.1 → 4.1 → 4.2
 
-**Full Mode 1 (humans only):** 1.1 → 1.4 → 3.1 → 3.2 → 4.1 → 4.2
+**Full Mode 1 (humans only):** Track A (Steps 3-6) → 3.1 → 3.2 → 4.1 → 4.2
 
 ## Key Files
 
@@ -198,3 +227,5 @@ Track B (agents):       2.1 -> 2.2 -> 2.4
 - `diplomacy/engine/map.py` — Board topology, adjacency, phase sequences
 - `diplomacy/client/` — Python client (how agents connect)
 - `diplomacy/server/` — WebSocket server, request managers, scheduler
+- `diplomacy/server/server_game.py` — Talk round state machine (Steps 1-2)
+- `diplomacy/tests/test_talk_phase.py` — 75 Talk phase tests
