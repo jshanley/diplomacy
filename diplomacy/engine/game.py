@@ -224,7 +224,8 @@ class Game(Jsonable):
                  'convoy_paths_dest', 'zobrist_hash', 'renderer', 'game_id', 'map_name', 'role', 'rules',
                  'message_history', 'state_history', 'result_history', 'status', 'timestamp_created', 'n_controls',
                  'deadline', 'registration_password', 'observer_level', 'controlled_powers', '_phase_wrapper_type',
-                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state']
+                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state',
+                 'talk_num_rounds']
     zobrist_tables = {}
     rule_cache = ()
     model = {
@@ -256,6 +257,7 @@ class Game(Jsonable):
         strings.STATE_HISTORY: parsing.DefaultValueType(parsing.DictType(str, dict), {}),
         strings.STATUS: parsing.DefaultValueType(parsing.EnumerationType(strings.ALL_GAME_STATUSES), strings.FORMING),
         strings.TIMESTAMP_CREATED: parsing.OptionalValueType(int),
+        strings.TALK_NUM_ROUNDS: parsing.DefaultValueType(int, 2),
         strings.VICTORY: parsing.DefaultValueType(parsing.SequenceType(int), []),
         strings.WIN: parsing.DefaultValueType(int, 0),
         strings.ZOBRIST_HASH: parsing.DefaultValueType(int, 0),
@@ -293,6 +295,7 @@ class Game(Jsonable):
         self.controlled_powers = None
         self.daide_port = None
         self.fixed_state = None
+        self.talk_num_rounds = 2
 
         # Caches
         self._unit_owner_cache = None               # {(unit, coast_required): owner}

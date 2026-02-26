@@ -36,12 +36,17 @@ class ServerGame(Game):
         - **omniscient** (only for server games):
           special Power object (diplomacy.Power) used to manage omniscient tokens.
     """
-    __slots__ = ['server', 'omniscient_usernames', 'moderator_usernames', 'observer', 'omniscient']
+    __slots__ = ['server', 'omniscient_usernames', 'moderator_usernames', 'observer', 'omniscient',
+                 'talk_round', 'talk_round_state', 'talk_ready', 'talk_held_messages']
     model = parsing.update_model(Game.model, {
         strings.MODERATOR_USERNAMES: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
         strings.OBSERVER: parsing.OptionalValueType(parsing.JsonableClassType(Power)),
         strings.OMNISCIENT: parsing.OptionalValueType(parsing.JsonableClassType(Power)),
         strings.OMNISCIENT_USERNAMES: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
+        strings.TALK_ROUND: parsing.DefaultValueType(int, 0),
+        strings.TALK_ROUND_STATE: parsing.DefaultValueType(str, ''),
+        strings.TALK_READY: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
+        strings.TALK_HELD_MESSAGES: parsing.DefaultValueType(parsing.SequenceType(dict), []),
     })
 
     def __init__(self, server=None, **kwargs):
@@ -51,6 +56,10 @@ class ServerGame(Game):
         self.moderator_usernames = None     # type: set
         self.observer = None                # type: Power
         self.omniscient = None              # type: Power
+        self.talk_round = 0
+        self.talk_round_state = ''
+        self.talk_ready = set()
+        self.talk_held_messages = []
 
         super(ServerGame, self).__init__(**kwargs)
         assert self.is_server_game()
@@ -459,6 +468,38 @@ class ServerGame(Game):
         for power in self.powers.values():  # type: Power
             power.remove_tokens([token for token in power.tokens if not filter_function(token)])
 
+    def _open_talk_round(self, round_number):
+        """Open a new talk round."""
+        self.talk_round = round_number
+        self.talk_round_state = strings.ROUND_OPEN
+        self.talk_ready = set()
+
+    def _close_talk_round(self):
+        """Close the current talk round."""
+        self.talk_round_state = strings.ROUND_CLOSED
+
+    def _reset_talk_state(self):
+        """Reset talk state for next Talk phase."""
+        self.talk_round = 0
+        self.talk_round_state = ''
+        self.talk_ready = set()
+        self.talk_held_messages = []
+
+    def talk_round_complete(self):
+        """Check if all non-eliminated controlled powers have signaled ready."""
+        if self.phase_type != 'T':
+            return False
+        if self.talk_round_state not in (strings.ROUND_OPEN, strings.ORDERS_OPEN):
+            return False
+        for power in self.powers.values():
+            if power.is_eliminated():
+                continue
+            if not power.is_controlled():
+                continue
+            if power.name not in self.talk_ready:
+                return False
+        return True
+
     def process(self):
         """ Process current game phase and move forward to next phase.
 
@@ -477,6 +518,30 @@ class ServerGame(Game):
         """
         if not self.is_game_active:
             return None, None, None
+
+        # --- Talk round handling ---
+        if self.phase_type == 'T' and 'NO_TALK' not in self.rules:
+            if self.talk_round == 0:
+                # First time entering this Talk phase — open round 1
+                self._open_talk_round(1)
+                return None, None, None
+
+            if self.talk_round < self.talk_num_rounds:
+                # More rounds remain — advance to next round
+                self._close_talk_round()
+                self._open_talk_round(self.talk_round + 1)
+                return None, None, None
+
+            if self.talk_round == self.talk_num_rounds and self.talk_round_state != strings.ORDERS_OPEN:
+                # Final round done, transition to ORDERS_OPEN
+                self._close_talk_round()
+                self.talk_round_state = strings.ORDERS_OPEN
+                self.talk_ready = set()
+                return None, None, None
+
+            # ORDERS_OPEN is done — reset talk state and fall through to full phase processing
+            self._reset_talk_state()
+
         # Kick powers if necessary.
         all_orderable_locations = self.get_orderable_locations()
         kicked_powers = {}

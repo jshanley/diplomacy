@@ -493,3 +493,430 @@ def test_game_not_done_after_talk():
     game.process()  # S1901T -> S1901M
     assert game.is_game_done is False
     assert game.phase != 'COMPLETED'
+
+
+# ===========================================================================
+# SERVER-LEVEL ROUND STATE TESTS
+# ===========================================================================
+
+def _server_game_with_talk(**kwargs):
+    """Helper: create a ServerGame with Talk phases enabled and status=active."""
+    rules = kwargs.pop('rules', ['SOLITAIRE', 'NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE'])
+    from diplomacy.utils import strings
+    return ServerGame(status=strings.ACTIVE, rules=rules, **kwargs)
+
+
+def _server_game_with_controlled_powers(**kwargs):
+    """Helper: create a ServerGame with Talk enabled and two controlled powers."""
+    from diplomacy.utils import strings
+    rules = kwargs.pop('rules', ['NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE'])
+    game = ServerGame(status=strings.ACTIVE, rules=rules, **kwargs)
+    # Control two powers
+    game.get_power('FRANCE').set_controlled('user_france')
+    game.get_power('ENGLAND').set_controlled('user_england')
+    return game
+
+
+def test_talk_round_initial_state():
+    """New ServerGame starts with talk_round=0."""
+    game = _server_game_with_talk()
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''
+    assert game.talk_ready == set()
+    assert game.talk_held_messages == []
+
+
+def test_talk_round_opens_on_process():
+    """First process() of Talk phase opens round 1."""
+    game = _server_game_with_talk()
+    assert game.phase_type == 'T'
+    prev, curr, kicked = game.process()
+    assert prev is None and curr is None and kicked is None
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+    assert game.talk_ready == set()
+
+
+def test_talk_round_advances():
+    """Signaling ready advances through rounds (default 2 rounds)."""
+    game = _server_game_with_talk()
+    assert game.talk_num_rounds == 2
+
+    # Open round 1
+    game.process()
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+
+    # Process again -> should advance to round 2
+    game.process()
+    assert game.talk_round == 2
+    assert game.talk_round_state == 'round_open'
+
+
+def test_talk_round_to_orders_open():
+    """After final round, transitions to orders_open."""
+    game = _server_game_with_talk()
+
+    # Open round 1
+    game.process()
+    # Advance to round 2
+    game.process()
+    assert game.talk_round == 2
+    # Process final round -> orders_open
+    game.process()
+    assert game.talk_round_state == 'orders_open'
+    assert game.talk_ready == set()
+
+
+def test_talk_round_to_movement():
+    """After orders_open ready, advances to Movement."""
+    game = _server_game_with_talk()
+
+    # Round 1
+    game.process()
+    # Round 2
+    game.process()
+    # orders_open
+    game.process()
+    assert game.talk_round_state == 'orders_open'
+
+    # Final process -> should advance past Talk to Movement
+    game.process()
+    assert game.phase_type == 'M'
+    assert game.get_current_phase() == 'S1901M'
+    # Talk state should be reset
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''
+
+
+def test_talk_round_state_serialization():
+    """to_dict/from_dict preserves round state."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    game.process()  # advance to round 2
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_round == 2
+    assert restored.talk_round_state == 'round_open'
+    assert restored.talk_ready == set()
+
+
+def test_talk_round_complete_skips_eliminated():
+    """Eliminated powers don't block talk_round_complete()."""
+    game = _server_game_with_controlled_powers()
+    game.process()  # open round 1
+
+    # Eliminate FRANCE by removing all units and centers
+    france = game.get_power('FRANCE')
+    france.units = []
+    france.centers = []
+    france.retreats = {}
+
+    # Only ENGLAND needs to be ready
+    game.talk_ready.add('ENGLAND')
+    assert game.talk_round_complete()
+
+
+def test_talk_round_complete_skips_dummy():
+    """Uncontrolled (dummy) powers don't block talk_round_complete()."""
+    game = _server_game_with_controlled_powers()
+    game.process()  # open round 1
+
+    # Only FRANCE and ENGLAND are controlled; others are dummy
+    game.talk_ready.add('FRANCE')
+    game.talk_ready.add('ENGLAND')
+    assert game.talk_round_complete()
+
+
+def test_talk_round_resets_on_new_phase():
+    """New Talk phase starts at round 0 after full cycle."""
+    game = _server_game_with_talk()
+
+    # Go through full Talk cycle: round 1, round 2, orders_open, then advance
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # advance to Movement
+
+    assert game.phase_type == 'M'
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''
+
+    # Process Movement to get to Fall Talk
+    game.process()  # S1901M -> F1901T
+    assert game.phase_type == 'T'
+    assert game.talk_round == 0
+
+    # First process of new Talk phase opens round 1
+    game.process()
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+
+
+def test_talk_num_rounds_config():
+    """talk_num_rounds=3 gives 3 rounds."""
+    game = _server_game_with_talk(talk_num_rounds=3)
+    assert game.talk_num_rounds == 3
+
+    game.process()  # round 1
+    assert game.talk_round == 1
+    game.process()  # round 2
+    assert game.talk_round == 2
+    game.process()  # round 3
+    assert game.talk_round == 3
+    assert game.talk_round_state == 'round_open'
+
+    # Now should go to orders_open
+    game.process()
+    assert game.talk_round_state == 'orders_open'
+
+    # Then advance to Movement
+    game.process()
+    assert game.phase_type == 'M'
+
+
+def test_talk_round_complete_false_not_talk_phase():
+    """talk_round_complete() returns False when not in a Talk phase."""
+    game = _server_game_with_talk()
+    # Advance through full Talk cycle to reach Movement
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+    assert game.phase_type == 'M'
+    assert game.talk_round_complete() is False
+
+
+def test_talk_round_complete_false_wrong_state():
+    """talk_round_complete() returns False when round_state is not round_open or orders_open."""
+    game = _server_game_with_talk()
+    # round_state is '' before any process()
+    assert game.talk_round_complete() is False
+
+    game.process()  # round 1, state='round_open'
+    # Manually set to round_closed
+    game.talk_round_state = 'round_closed'
+    assert game.talk_round_complete() is False
+
+
+def test_talk_round_complete_false_missing_power():
+    """talk_round_complete() returns False when a controlled power hasn't signaled ready."""
+    game = _server_game_with_controlled_powers()
+    game.process()  # open round 1
+
+    # Only FRANCE is ready, ENGLAND is not
+    game.talk_ready.add('FRANCE')
+    assert game.talk_round_complete() is False
+
+    # Now ENGLAND too
+    game.talk_ready.add('ENGLAND')
+    assert game.talk_round_complete() is True
+
+
+def test_talk_round_complete_true_orders_open():
+    """talk_round_complete() returns True during orders_open when all controlled powers are ready."""
+    game = _server_game_with_controlled_powers()
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+    assert game.talk_round_state == 'orders_open'
+    assert game.talk_ready == set()
+
+    game.talk_ready.add('FRANCE')
+    game.talk_ready.add('ENGLAND')
+    assert game.talk_round_complete() is True
+
+
+def test_talk_round_complete_solitaire_all_dummy():
+    """talk_round_complete() returns True in solitaire (all powers are dummy)."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    # Solitaire: no controlled powers -> no one to wait for
+    assert game.talk_round_complete() is True
+
+
+def test_process_inactive_game_returns_none():
+    """process() returns (None, None, None) for inactive game."""
+    from diplomacy.utils import strings
+    game = ServerGame(status=strings.FORMING,
+                      rules=['SOLITAIRE', 'NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE'])
+    assert not game.is_game_active
+    prev, curr, kicked = game.process()
+    assert prev is None and curr is None and kicked is None
+
+
+def test_process_no_talk_rule_skips_round_handling():
+    """process() with NO_TALK in rules skips talk round handling entirely."""
+    from diplomacy.utils import strings
+    game = ServerGame(status=strings.ACTIVE)
+    # Default rules include NO_TALK, game starts at Movement
+    assert 'NO_TALK' in game.rules
+    assert game.phase_type == 'M'
+    # process() should work normally (no talk round interference)
+    prev, curr, kicked = game.process()
+    # Should advance normally past Movement
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''
+
+
+def test_talk_ready_cleared_between_rounds():
+    """talk_ready set is cleared when advancing from one round to the next."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.talk_ready.add('FRANCE')
+    game.talk_ready.add('ENGLAND')
+    assert len(game.talk_ready) == 2
+
+    game.process()  # round 2
+    assert game.talk_ready == set()
+
+
+def test_talk_ready_cleared_entering_orders_open():
+    """talk_ready set is cleared when transitioning to orders_open."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.process()  # round 2
+    game.talk_ready.add('FRANCE')
+
+    game.process()  # orders_open
+    assert game.talk_round_state == 'orders_open'
+    assert game.talk_ready == set()
+
+
+def test_talk_held_messages_cleared_on_reset():
+    """talk_held_messages is cleared when talk state resets."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.talk_held_messages.append({'test': 'message'})
+
+    # Complete full cycle
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+    assert game.talk_held_messages == []
+
+
+def test_talk_round_serialization_with_ready():
+    """to_dict/from_dict preserves talk_ready with values."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.talk_ready.add('FRANCE')
+    game.talk_ready.add('ENGLAND')
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_ready == {'FRANCE', 'ENGLAND'}
+    assert restored.talk_round == 1
+    assert restored.talk_round_state == 'round_open'
+
+
+def test_talk_round_serialization_orders_open():
+    """to_dict/from_dict preserves orders_open state."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_round_state == 'orders_open'
+    assert restored.talk_round == 2
+
+
+def test_talk_num_rounds_one():
+    """talk_num_rounds=1 gives exactly one talk round before orders_open."""
+    game = _server_game_with_talk(talk_num_rounds=1)
+    assert game.talk_num_rounds == 1
+
+    game.process()  # round 1
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+
+    # Next process should go to orders_open (no round 2)
+    game.process()
+    assert game.talk_round_state == 'orders_open'
+
+    # Then advance to Movement
+    game.process()
+    assert game.phase_type == 'M'
+
+
+def test_talk_num_rounds_serialization():
+    """talk_num_rounds survives Game serialization."""
+    game = _game_with_talk(talk_num_rounds=5)
+    game_dict = game.to_dict()
+    restored = Game.from_dict(game_dict)
+    assert restored.talk_num_rounds == 5
+
+
+def test_talk_round_multi_year_server_game():
+    """ServerGame Talk round state resets properly across multiple years."""
+    game = _server_game_with_talk()
+
+    for year_cycle in range(3):
+        # Spring Talk
+        assert game.phase_type == 'T', f'Year cycle {year_cycle}: expected Talk, got {game.phase_type}'
+        assert game.talk_round == 0
+        game.process()  # round 1
+        game.process()  # round 2
+        game.process()  # orders_open
+        game.process()  # -> Movement
+
+        assert game.phase_type == 'M'
+        assert game.talk_round == 0
+        game.process()  # Movement -> Fall Talk
+
+        # Fall Talk
+        assert game.phase_type == 'T'
+        assert game.talk_round == 0
+        game.process()  # round 1
+        game.process()  # round 2
+        game.process()  # orders_open
+        game.process()  # -> Movement
+
+        assert game.phase_type == 'M'
+        game.process()  # Movement -> next Spring Talk
+
+
+def test_process_return_values_during_talk_rounds():
+    """All process() calls during talk rounds return (None, None, None)."""
+    game = _server_game_with_talk()
+
+    # Round 1 open
+    result = game.process()
+    assert result == (None, None, None)
+
+    # Round 2 open
+    result = game.process()
+    assert result == (None, None, None)
+
+    # Orders open
+    result = game.process()
+    assert result == (None, None, None)
+
+    # Fall through to actual processing (returns phase data)
+    prev, curr, kicked = game.process()
+    assert prev is not None  # previous phase data
+    assert curr is not None  # current phase data
+    assert kicked is None
+
+
+def test_talk_round_state_not_affected_by_movement_process():
+    """Processing a Movement phase doesn't alter talk round state."""
+    game = _server_game_with_talk()
+    # Complete Talk cycle
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+
+    assert game.phase_type == 'M'
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''
+
+    # Process Movement
+    game.process()
+    # Should still be clean
+    assert game.talk_round == 0
+    assert game.talk_round_state == ''

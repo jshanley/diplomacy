@@ -1054,7 +1054,14 @@ def on_set_wait_flag(server, request, connection_handler):
     # Notify other power tokens.
     Notifier(server, ignore_addresses=[request.address_in_game]).notify_power_wait_flag(
         level.game, level.game.get_power(level.power_name), request.wait)
-    if level.game.does_not_wait():
+    # Talk phase: wait=False means "I'm ready for this round"
+    if level.game.phase_type == 'T' and not request.wait:
+        level.game.talk_ready.add(level.power_name)
+        if level.game.talk_round_complete():
+            server.force_game_processing(level.game)
+    elif level.game.phase_type == 'T' and request.wait:
+        level.game.talk_ready.discard(level.power_name)
+    elif level.game.does_not_wait():
         server.force_game_processing(level.game)
     server.save_game(level.game)
 
