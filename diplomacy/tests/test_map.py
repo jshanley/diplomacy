@@ -190,18 +190,23 @@ def test_find_next_phase():
     this_map = deepcopy(Map())
     assert this_map.find_next_phase('FORMING') == 'FORMING'
     assert this_map.find_next_phase('COMPLETED') == 'COMPLETED'
-    assert this_map.find_next_phase('WINTER 1901 ADJUSTMENTS') == 'SPRING 1902 MOVEMENT'
+    assert this_map.find_next_phase('WINTER 1901 ADJUSTMENTS') == 'SPRING 1902 TALK'
+    assert this_map.find_next_phase('SPRING 1902 TALK') == 'SPRING 1902 MOVEMENT'
+    assert this_map.find_next_phase('SPRING 1901 RETREATS') == 'FALL 1901 TALK'
     assert this_map.find_next_phase('FALL 1901 RETREATS', phase_type='M') == 'SPRING 1902 MOVEMENT'
     assert this_map.find_next_phase('SPRING 1902 RETREATS', phase_type='M', skip=1) == 'SPRING 1903 MOVEMENT'
+    assert this_map.find_next_phase('FALL 1901 RETREATS', phase_type='T') == 'SPRING 1902 TALK'
 
 def test_find_previous_phase():
     """ Tests map.find_previous_phase """
     this_map = deepcopy(Map())
     assert this_map.find_previous_phase('FORMING') == 'FORMING'
     assert this_map.find_previous_phase('COMPLETED') == 'COMPLETED'
-    assert this_map.find_previous_phase('SPRING 1902 MOVEMENT') == 'WINTER 1901 ADJUSTMENTS'
+    assert this_map.find_previous_phase('SPRING 1902 MOVEMENT') == 'SPRING 1902 TALK'
+    assert this_map.find_previous_phase('SPRING 1902 TALK') == 'WINTER 1901 ADJUSTMENTS'
     assert this_map.find_previous_phase('SPRING 1902 MOVEMENT', phase_type='R') == 'FALL 1901 RETREATS'
     assert this_map.find_previous_phase('SPRING 1903 MOVEMENT', phase_type='R', skip=1) == 'SPRING 1902 RETREATS'
+    assert this_map.find_previous_phase('SPRING 1902 MOVEMENT', phase_type='T') == 'SPRING 1902 TALK'
 
 def test_phase_abbr():
     """ Tests map.phase_abbr """

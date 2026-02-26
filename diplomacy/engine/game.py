@@ -2750,6 +2750,14 @@ class Game(Jsonable):
             :return: Nothing
         """
         self._move_to_start_phase()
+
+        # If Talk is enabled, back up to the Talk phase before Movement.
+        if self.phase_type == 'M' and 'NO_TALK' not in self.rules:
+            talk_phase = self.map.find_previous_phase(self.phase, phase_type='T')
+            if talk_phase not in (None, '', 'FORMING', 'COMPLETED'):
+                self.phase = talk_phase
+                self.phase_type = 'T'
+
         self.note = ''
         self.win = self.victory[0]
 
@@ -2781,6 +2789,8 @@ class Game(Jsonable):
                 power.civil_disorder = civil_disorder
 
         # Processing the game
+        # Talk phase: no engine-level processing. Falls through to _resolve()
+        # which handles phase advancement. Server layer manages round lifecycle.
         if self.phase_type == 'M':
             self._determine_orders()
             self._add_coasts()
@@ -2872,6 +2882,12 @@ class Game(Jsonable):
 
         # When changing phases, clearing all caches
         self.clear_cache()
+
+        # Talk phase - Skip if NO_TALK rule is set
+        if self.phase_type == 'T':
+            if 'NO_TALK' in self.rules:
+                return 1
+            return 0
 
         # Movement phase - Always need to process
         if self.phase_type == 'M':

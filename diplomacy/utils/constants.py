@@ -49,7 +49,7 @@ PRIVATE_BOT_PASSWORD = '#bot:password:28131821--mx1fh5g7hg5gg5g´[],s222222223dj
 PRIVATE_BOT_TIMEOUT_SECONDS = 60
 
 # Default rules used to construct a Game object when no rules are provided.
-DEFAULT_GAME_RULES = ('SOLITAIRE', 'NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE')
+DEFAULT_GAME_RULES = ('SOLITAIRE', 'NO_PRESS', 'NO_TALK', 'IGNORE_ERRORS', 'POWER_CHOICE')
 
 class OrderSettings:
     """ Constants to define flags for attribute Power.order_is_set. """
