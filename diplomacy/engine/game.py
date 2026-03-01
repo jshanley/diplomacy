@@ -224,7 +224,8 @@ class Game(Jsonable):
                  'convoy_paths_dest', 'zobrist_hash', 'renderer', 'game_id', 'map_name', 'role', 'rules',
                  'message_history', 'state_history', 'result_history', 'status', 'timestamp_created', 'n_controls',
                  'deadline', 'registration_password', 'observer_level', 'controlled_powers', '_phase_wrapper_type',
-                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state']
+                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state',
+                 'talk_num_rounds']
     zobrist_tables = {}
     rule_cache = ()
     model = {
@@ -256,6 +257,7 @@ class Game(Jsonable):
         strings.STATE_HISTORY: parsing.DefaultValueType(parsing.DictType(str, dict), {}),
         strings.STATUS: parsing.DefaultValueType(parsing.EnumerationType(strings.ALL_GAME_STATUSES), strings.FORMING),
         strings.TIMESTAMP_CREATED: parsing.OptionalValueType(int),
+        strings.TALK_NUM_ROUNDS: parsing.DefaultValueType(int, 2),
         strings.VICTORY: parsing.DefaultValueType(parsing.SequenceType(int), []),
         strings.WIN: parsing.DefaultValueType(int, 0),
         strings.ZOBRIST_HASH: parsing.DefaultValueType(int, 0),
@@ -293,6 +295,7 @@ class Game(Jsonable):
         self.controlled_powers = None
         self.daide_port = None
         self.fixed_state = None
+        self.talk_num_rounds = 2
 
         # Caches
         self._unit_owner_cache = None               # {(unit, coast_required): owner}
@@ -2750,6 +2753,14 @@ class Game(Jsonable):
             :return: Nothing
         """
         self._move_to_start_phase()
+
+        # If Talk is enabled, back up to the Talk phase before Movement.
+        if self.phase_type == 'M' and 'NO_TALK' not in self.rules:
+            talk_phase = self.map.find_previous_phase(self.phase, phase_type='T')
+            if talk_phase not in (None, '', 'FORMING', 'COMPLETED'):
+                self.phase = talk_phase
+                self.phase_type = 'T'
+
         self.note = ''
         self.win = self.victory[0]
 
@@ -2781,6 +2792,8 @@ class Game(Jsonable):
                 power.civil_disorder = civil_disorder
 
         # Processing the game
+        # Talk phase: no engine-level processing. Falls through to _resolve()
+        # which handles phase advancement. Server layer manages round lifecycle.
         if self.phase_type == 'M':
             self._determine_orders()
             self._add_coasts()
@@ -2872,6 +2885,12 @@ class Game(Jsonable):
 
         # When changing phases, clearing all caches
         self.clear_cache()
+
+        # Talk phase - Skip if NO_TALK rule is set
+        if self.phase_type == 'T':
+            if 'NO_TALK' in self.rules:
+                return 1
+            return 0
 
         # Movement phase - Always need to process
         if self.phase_type == 'M':

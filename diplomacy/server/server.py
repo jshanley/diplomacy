@@ -441,6 +441,9 @@ class Server:
         self.save_game(server_game)
 
         if previous_phase_data is None and kicked_powers is None:
+            # Check if this is a Talk round advance (game still active in Talk)
+            if server_game.is_game_active and server_game.phase_type == 'T':
+                return False  # keep scheduled
             # Game must be unscheduled immediately.
             return True
 

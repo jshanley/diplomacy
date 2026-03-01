@@ -289,11 +289,12 @@ class Map:
             del self.homes['UNOWNED']
 
         # Ensure a default game-year FLOW
-        self.flow = ['SPRING:MOVEMENT,RETREATS', 'FALL:MOVEMENT,RETREATS', 'WINTER:ADJUSTMENTS']
+        self.flow = ['SPRING:TALK,MOVEMENT,RETREATS', 'FALL:TALK,MOVEMENT,RETREATS',
+                     'WINTER:ADJUSTMENTS']
         self.flow_sign = 1
-        self.seq = ['NEWYEAR', 'SPRING MOVEMENT', 'SPRING RETREATS', 'FALL MOVEMENT', 'FALL RETREATS',
-                    'WINTER ADJUSTMENTS']
-        self.phase_abbrev = {'M': 'MOVEMENT', 'R': 'RETREATS', 'A': 'ADJUSTMENTS'}
+        self.seq = ['NEWYEAR', 'SPRING TALK', 'SPRING MOVEMENT', 'SPRING RETREATS',
+                    'FALL TALK', 'FALL MOVEMENT', 'FALL RETREATS', 'WINTER ADJUSTMENTS']
+        self.phase_abbrev = {'T': 'TALK', 'M': 'MOVEMENT', 'R': 'RETREATS', 'A': 'ADJUSTMENTS'}
 
         # Validating initial game phase
         self.phase = self.phase or 'SPRING 1901 MOVEMENT'

@@ -191,6 +191,11 @@ STATE_TYPE = 'state_type'
 STATES = 'states'
 STATUS = 'status'
 SUPPLY_CENTERS = 'supply_centers'
+TALK_HELD_MESSAGES = 'talk_held_messages'
+TALK_NUM_ROUNDS = 'talk_num_rounds'
+TALK_READY = 'talk_ready'
+TALK_ROUND = 'talk_round'
+TALK_ROUND_STATE = 'talk_round_state'
 TIME_SENT = 'time_sent'
 TIMESTAMP = 'timestamp'
 TIMESTAMP_CREATED = 'timestamp_created'
@@ -222,6 +227,11 @@ WINNERS = 'winners'
 WINTER_UNDECIDED_PLAYER_MODE = 'winter_undecided_player_mode'
 YES = 'yes'
 ZOBRIST_HASH = 'zobrist_hash'
+
+# Talk round state values.
+ROUND_OPEN = 'round_open'
+ROUND_CLOSED = 'round_closed'
+ORDERS_OPEN = 'orders_open'
 
 # Special name sets.
 ALL_GAME_STATUSES = (FORMING, ACTIVE, PAUSED, COMPLETED, CANCELED)
