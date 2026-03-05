@@ -21,6 +21,7 @@ The base engine is working:
 - Python client connects, authenticates, creates games, submits orders
 - Existing web UI has a known crash bug (documented in `known-bugs.md`) — we're building our own UI later
 - **Track A (Negotiation Engine) is complete** — all 8 steps done on `feature/talk-phase-engine`
+- **Track B (Agent Framework) is complete** — Tasks 2.1, 2.2, 2.3, 2.4, 2.5 done on `feature/talk-phase-engine`
 
 To verify locally:
 ```bash
@@ -102,47 +103,55 @@ Structured Talk phases with batch message delivery. Steps 1-2 are complete.
 
 ---
 
-### Track B: Agent Framework (no negotiation dependency)
+### Track B: Agent Framework ✅ COMPLETE
 
-These tasks use the existing engine as-is. Bots submit orders — no talking required.
+**2.1 — Minimal "dumb bot" agent** ✅ DONE
+- `DumbBot` extends `BaseAgent`, picks random legal orders each turn
+- Uses `random.Random` instance for deterministic seeding
+- Proves agent pipeline end-to-end (local + network)
+- 8 unit tests
+- Commit: `86553fb`
 
-**2.1 — Minimal "dumb bot" agent**
-- Connects to server via Python client
-- Picks random legal orders each turn
-- Proves the agent pipeline works end-to-end
-- Test: bot connects, submits valid orders, game advances
+**2.2 — Agent standard data structure** ✅ DONE
+- `AgentDef` with `__slots__`: creator, model_id, instructions, description, version, metadata
+- `to_dict()` for JSON serialization, `__repr__` for debugging
+- Data-only container — behavior lives in `BaseAgent` subclasses
+- 5 unit tests
+- Commit: `86553fb`
 
-**2.2 — Agent standard data structure**
-- Creator name (associated with the player)
-- Model identifier (which AI model)
-- Agent instructions (freeform strategy/personality prompt)
-- Constraints: agent can only touch game state, nothing else
-- Metadata for post-game analysis
+**2.4 — Agent-vs-agent test harness** ✅ DONE
+- `run_local_game()` — fast, no server, processes all phases synchronously
+- `run_network_game()` — full server pipeline with Tornado IOLoop
+- `GameResult` container: phases_played, phase_history, final_centers, winner, agents
+- `_normalize_agents()` accepts single agent, list of 7, or dict
+- 10 unit tests (8 local + 2 network)
+- Commit: `86553fb`
 
-**2.4 — Agent-vs-agent test harness**
-- Spin up a game with 7 dumb bots
-- Run the full game to completion
-- Verify: all phases resolve, no crashes, game ends properly
-- This is Mode 3 in its most primitive form
+**2.3 — Agent runner** ✅ DONE
+- Model-agnostic `LLMProvider` abstraction with 4 concrete providers:
+  - `OpenAIProvider` (GPT-4o default)
+  - `AnthropicProvider` (Claude Sonnet default)
+  - `GoogleProvider` (Gemini 2.0 Flash default)
+  - `GrokProvider` (xAI, OpenAI-compatible API)
+  - `StubProvider` (testing — canned responses or callable)
+- All providers lazily import their SDK — no hard dependencies
+- `format_game_state()` serializes board state, units, centers, possible orders, messages
+- `format_message_prompt()` variant for Talk phase message generation
+- `parse_orders()` extracts valid orders from LLM text (strips bullets, numbering, backticks)
+- `parse_messages()` extracts `RECIPIENT: body` formatted messages
+- Network harness updated with `enable_talk` parameter and Talk round callbacks
+- 6 provider tests, 7 formatter tests, 8 parser tests
+- Commit: `093d00b`
 
----
-
-### After Tracks Merge
-
-These need both the negotiation engine and the agent framework.
-
-**2.3 — Agent runner**
-- Takes an agent definition + API key
-- Spins up a session that connects to the game server
-- Feeds game state to the LLM, gets orders back
-- Handles the negotiation/press phase (sends/receives messages)
-- Model-agnostic: works with OpenAI, Anthropic, Google, etc.
-
-**2.5 — "Smart bot" with LLM integration**
-- Connect a real LLM as an agent
-- Feed it: board state, possible orders, press messages
-- Get back: orders + diplomatic messages
-- Test: LLM agent plays a full game without errors
+**2.5 — "Smart bot" with LLM integration** ✅ DONE
+- `LLMAgent` extends `BaseAgent` — uses provider + formatter + parser pipeline
+- `generate_orders()`: format state → call LLM → parse orders → validate → fill missing with random
+- `generate_messages()`: format Talk state → call LLM → parse messages
+- Graceful fallback: LLM errors or unparseable output → random valid orders
+- Custom instructions via `AgentDef.instructions` prepended to system prompt
+- `BaseAgent.generate_messages()` added as optional method (default: no messages)
+- 14 LLM agent tests (all using `StubProvider`)
+- Commit: `093d00b`
 
 ---
 
@@ -201,24 +210,24 @@ These need both the negotiation engine and the agent framework.
 
 ```
 Track A (negotiation):  Step 1 ✅ -> Step 2 ✅ -> Step 3 ✅ -> Step 4 ✅ -> Step 5 ✅ -> Step 6 ✅ -> Step 7 ✅ -> Step 8 ✅  COMPLETE
-Track B (agents):       2.1 -> 2.2 -> 2.4
-                                    ↘ merge ↙
-                              2.3 -> 2.5
-                                    ↓
-                         3.1 -> 3.2 -> 4.1 -> 4.2
-                                    ↓
-                           5.x (parallel)  6.x (after core is solid)
+Track B (agents):       2.1 ✅ -> 2.2 ✅ -> 2.4 ✅
+                                           ↘ merge ↙
+                                     2.3 ✅ -> 2.5 ✅  COMPLETE
+                                           ↓
+                                3.1 -> 3.2 -> 4.1 -> 4.2
+                                           ↓
+                                  5.x (parallel)  6.x (after core is solid)
 ```
 
-Track A is complete. Next priority is Track B (agent framework).
+Track A and Track B are both complete. Next priority is Phase 3 (Admin Portal).
 
-**Fastest demo (Mode 3, no talking):** 2.1 → 2.4 — can start now.
+**Mode 3 is fully functional** — `run_local_game(DumbBot())` or `run_local_game(LLMAgent(provider))` runs a complete game.
 
-**Full Mode 3 (with negotiation):** Track B → 2.3 → 2.5 (Track A already done)
+**Full Mode 3 (with negotiation):** `run_network_game(agent, enable_talk=True)` — working now.
 
-**Full Mode 2 (humans + agents):** Above + 3.1 → 4.1 → 4.2
+**Next steps for Mode 2 (humans + agents):** 3.1 → 4.1 → 4.2
 
-**Full Mode 1 (humans only):** 3.1 → 3.2 → 4.1 → 4.2 (Track A already done)
+**Next steps for Mode 1 (humans only):** 3.1 → 3.2 → 4.1 → 4.2
 
 ## Key Files
 
@@ -233,4 +242,7 @@ Track A is complete. Next priority is Track B (agent framework).
 - `diplomacy/server/request_managers.py` — Talk message interception (batch collection, communique handling)
 - `diplomacy/server/notifier.py` — TalkRoundUpdate and TalkPressLog notification dispatch
 - `diplomacy/communication/notifications.py` — TalkRoundUpdate and TalkPressLog notification classes
+- `diplomacy/agents/` — Agent framework package (BaseAgent, DumbBot, LLMAgent, harness, providers)
+- `diplomacy/tests/test_agents.py` — 23 agent framework tests (DumbBot, AgentDef, harness)
+- `diplomacy/tests/test_llm_agent.py` — 35 LLM agent tests (providers, formatter, parser, LLMAgent)
 - `diplomacy/tests/test_talk_phase.py` — 150 Talk phase tests (Steps 1-8)

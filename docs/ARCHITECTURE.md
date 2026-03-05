@@ -134,6 +134,34 @@ React 18 frontend, built with Vite, styled with Bootstrap 5.
 - Hash-based routing
 - Communicates with server via same WebSocket protocol as Python client
 
+### Agents (`diplomacy/agents/`)
+
+Agent framework for AI-powered Diplomacy play. Model-agnostic — works with any LLM provider.
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `base_agent.py` | 70 | Abstract base class: `generate_orders()`, `generate_messages()`, lifecycle hooks. |
+| `agent_def.py` | 55 | Agent metadata: creator, model_id, instructions, version, metadata. |
+| `dumb_bot.py` | 63 | Random legal orders agent (pipeline proof). |
+| `llm_agent.py` | 140 | LLM-powered agent with fallback to random on errors. |
+| `llm_provider.py` | 165 | Abstract `LLMProvider` + OpenAI, Anthropic, Google, Grok, Stub implementations. |
+| `state_formatter.py` | 130 | Game state → structured text for LLM prompts. |
+| `order_parser.py` | 100 | LLM response → validated order strings + diplomatic messages. |
+| `harness.py` | 260 | `run_local_game()` (fast) + `run_network_game()` (full pipeline with Talk). |
+
+**Quick start:**
+```python
+from diplomacy.agents import DumbBot, LLMAgent, OpenAIProvider, run_local_game
+
+# Random bot game (no API key needed)
+result = run_local_game(DumbBot(seed=42))
+
+# LLM agent game
+provider = OpenAIProvider(api_key='sk-...', model='gpt-4o')
+agent = LLMAgent(provider, instructions='Be aggressive. Expand quickly.')
+result = run_local_game(agent)
+```
+
 ### DAIDE (`diplomacy/daide/`)
 
 DAIDE (Diplomacy AI Development Environment) protocol adapter. TCP server for connecting legacy AI bots. Binary protocol, separate from the WebSocket API. Available but not critical for our use case — we'll use the Python client instead.
@@ -223,10 +251,16 @@ All powers signal ready (or deadline expires)
 - **Timer/deadline integration** — Round-specific deadlines with auto-advance
 - **Client notifications** — `TalkRoundUpdate` and `TalkPressLog` (Python + JS)
 
+### Recently Built (Track B — Agent Framework)
+- **Agent framework** — `BaseAgent` abstract class, `AgentDef` metadata, `DumbBot` random agent
+- **LLM provider layer** — Model-agnostic interface with OpenAI, Anthropic, Google, Grok providers
+- **Game state serializer** — Formats board state, units, centers, possible orders into structured text for LLM prompts
+- **Order parser** — Extracts valid orders from LLM text responses (handles bullets, numbering, backticks)
+- **LLM smart bot** — `LLMAgent` that plays full games with LLM-generated orders and diplomatic messages
+- **Game harness** — `run_local_game()` (fast, no server) and `run_network_game()` (full pipeline with Talk support)
+- **58 agent tests** — All using `StubProvider`, no API keys required
+
 ### Needs to Be Built
-- **Agent runner** — Takes agent definition + API key, connects to server, feeds game state to LLM, submits orders and messages
-- **Dumb bot agent** — Random legal orders, proves agent pipeline end-to-end
-- **Agent-vs-agent harness** — 7 bots, full game to completion, Mode 3 primitive
 - **Game mode configuration** — Three modes with smart defaults, admin setup flow
 - **Admin portal** — Game creation wizard with full specification options
 - **Player portal** — In-game UI for humans (order submission, negotiation, map view)
