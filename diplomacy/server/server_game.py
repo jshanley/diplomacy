@@ -533,6 +533,8 @@ class ServerGame(Game):
         self.talk_ready = set()
         self.talk_held_messages = []
         self.talk_message_counts = {}
+        self._last_delivered_messages = []
+        self._last_press_log = []
 
     def talk_round_complete(self):
         """Check if all non-eliminated controlled powers have signaled ready."""
@@ -588,8 +590,28 @@ class ServerGame(Game):
                 self.talk_ready = set()
                 return None, None, None
 
-            # ORDERS_OPEN is done — reset talk state and fall through to full phase processing
+            # ORDERS_OPEN done — save Talk history, transition to Movement, then process orders.
+            talk_phase = self._phase_wrapper_type(self.current_short_phase)
+            talk_messages = self.messages.copy()
+            talk_state = self.get_state()
+
             self._reset_talk_state()
+
+            # Advance phase from Talk → Movement
+            next_movement = self.map.find_next_phase(self.phase, phase_type='M')
+            if next_movement and next_movement not in ('', 'FORMING', 'COMPLETED'):
+                self.phase = next_movement
+                self.phase_type = 'M'
+
+            # Record Talk phase in history (negotiation only — no orders/results)
+            self.order_history.put(talk_phase, {})
+            self.message_history.put(talk_phase, talk_messages)
+            self.state_history.put(talk_phase, talk_state)
+            self.result_history.put(talk_phase, {})
+            self.messages.clear()
+            self.clear_vote()
+            if self.error:
+                self.error = []
 
         # Kick powers if necessary.
         all_orderable_locations = self.get_orderable_locations()
@@ -616,6 +638,12 @@ class ServerGame(Game):
         if self.count_controlled_powers() < self.get_expected_controls_count():
             # There is no more enough controlled powers, we should stop game.
             self.set_status(strings.FORMING)
+
+        # If we've landed on a new Talk phase, auto-open round 1 so
+        # the UI and bots immediately see round_open.
+        if (self.is_game_active and self.phase_type == 'T'
+                and self.talk_round == 0 and 'NO_TALK' not in self.rules):
+            self._open_talk_round(1)
 
         # Return process results: previous phase data, current phase data, and None for no kicked powers.
         return previous_phase_data, self.get_phase_data(), None

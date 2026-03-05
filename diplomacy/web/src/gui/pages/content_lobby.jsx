@@ -137,6 +137,7 @@ export class ContentLobby extends React.Component {
             sendingMessage: false,
             messagesSentThisRound: 0,
             readySent: false,
+            messageFilter: 'all',   // 'all', 'sent', 'received'
             // Bot UI state
             showBotForm: false,
             botCount: 6,
@@ -157,6 +158,7 @@ export class ContentLobby extends React.Component {
         this.onSendMessage = this.onSendMessage.bind(this);
         this.onReady = this.onReady.bind(this);
         this.onAddBots = this.onAddBots.bind(this);
+        this.onDone = this.onDone.bind(this);
     }
 
     componentDidMount() {
@@ -225,6 +227,7 @@ export class ContentLobby extends React.Component {
                 api.lobbyGameState(this.state.lobby.code),
                 api.lobbyGetOrders(this.state.lobby.code),
             ]);
+            if (!gs) return;
             this.setState(prev => {
                 const newState = {
                     gameState: gs,
@@ -355,6 +358,41 @@ export class ContentLobby extends React.Component {
         try {
             await api.lobbySubmitOrders(this.state.lobby.code, orderList, false);
             this.setState({ submitting: false, submitted: true });
+        } catch (err) {
+            this.showError(err);
+            this.setState({ submitting: false });
+        }
+    }
+
+    async onDone() {
+        // Auto-fill Hold for any unordered units, submit, and signal ready
+        const { ordersData, builtOrders, gameState } = this.state;
+        const yourPower = gameState.your_power;
+        const units = (ordersData && ordersData.units) || [];
+        const finalOrders = { ...builtOrders };
+        // Only auto-fill Hold during Movement (or Talk orders_open which acts as Movement).
+        // During Retreat/Adjustment, unordered units are left to the server default.
+        // Guard: onDone should never fire during Talk round_open (negotiation).
+        const phaseType = gameState.phase_type;
+        if (phaseType === 'T' && this.state.talkRoundState !== 'orders_open') {
+            return;
+        }
+        const isMovement = phaseType === 'M' || (phaseType === 'T' && this.state.talkRoundState === 'orders_open');
+        if (isMovement) {
+            for (const unit of units) {
+                const loc = unit.substring(2, 5);
+                if (!finalOrders[loc]) {
+                    finalOrders[loc] = unit + ' H';
+                }
+            }
+        }
+        const orderList = Object.values(finalOrders).filter(Boolean);
+        this.setState({ submitting: true, error: null });
+        try {
+            await api.lobbySubmitOrders(this.state.lobby.code, orderList, false);
+            this.setState({ submitting: false, submitted: true, builtOrders: finalOrders });
+            await api.lobbyReady(this.state.lobby.code);
+            this.setState({ readySent: true });
         } catch (err) {
             this.showError(err);
             this.setState({ submitting: false });
@@ -578,7 +616,7 @@ export class ContentLobby extends React.Component {
 
     renderTalkPanel() {
         const { gameState, player, talkRound, talkRoundState, talkNumRounds,
-                talkMaxMessages, talkReadyPowers, messages,
+                talkMaxMessages, talkReadyPowers, messages, messageFilter,
                 draftRecipient, draftMessage, sendingMessage, readySent } = this.state;
         if (!gameState) return null;
 
@@ -590,6 +628,13 @@ export class ContentLobby extends React.Component {
         // Use local counter (server holds messages until round closes)
         const sentThisRound = this.state.messagesSentThisRound;
         const canSend = isRoundOpen && sentThisRound < talkMaxMessages && !readySent;
+
+        // Filter messages
+        const filteredMessages = messages.filter(m => {
+            if (messageFilter === 'sent') return m.sender === yourPower;
+            if (messageFilter === 'received') return m.sender !== yourPower;
+            return true;
+        });
 
         return (
             <div className="game-section talk-panel">
@@ -613,16 +658,29 @@ export class ContentLobby extends React.Component {
                     ))}
                 </div>
 
+                {/* Message filter toggle */}
+                <div className="talk-filter-row">
+                    {['all', 'sent', 'received'].map(f => (
+                        <button key={f}
+                                className={`talk-filter-btn ${messageFilter === f ? 'active' : ''}`}
+                                onClick={() => this.setState({ messageFilter: f })}>
+                            {f.toUpperCase()}
+                        </button>
+                    ))}
+                </div>
+
                 {/* Messages thread */}
                 <div className="talk-messages">
-                    {messages.length === 0 && (
+                    {filteredMessages.length === 0 && (
                         <div className="talk-no-messages">
-                            {isRoundOpen
+                            {isRoundOpen && messages.length === 0
                                 ? 'Messages are revealed when all players are ready.'
-                                : 'No messages this phase.'}
+                                : filteredMessages.length === 0 && messages.length > 0
+                                    ? `No ${messageFilter} messages.`
+                                    : 'No messages this phase.'}
                         </div>
                     )}
-                    {messages.map((m, i) => (
+                    {filteredMessages.map((m, i) => (
                         <div key={i} className={`talk-msg ${m.sender === yourPower ? 'sent' : 'received'}`}>
                             <div className="talk-msg-header">
                                 <span className="talk-msg-sender">{m.sender}</span>
@@ -714,13 +772,15 @@ export class ContentLobby extends React.Component {
                 mapInfo = gameState.map_info;
                 gameEngine = buildGameStub(gameState, ordersData);
                 phaseType = gameEngine.getPhaseType();
+                // During orders_open in a Talk phase, orders are Movement orders
+                const effectivePhaseType = (phaseType === 'T') ? 'M' : phaseType;
 
                 // Compute allowed order types for the current power
                 if (gameEngine.orderableLocations && !isDone) {
                     const orderTypeToLocs = gameEngine.getOrderTypeToLocs(yourPower);
                     allowedOrderTypes = Object.keys(orderTypeToLocs);
-                    if (allowedOrderTypes.length && phaseType) {
-                        POSSIBLE_ORDERS.sortOrderTypes(allowedOrderTypes, phaseType);
+                    if (allowedOrderTypes.length && effectivePhaseType) {
+                        POSSIBLE_ORDERS.sortOrderTypes(allowedOrderTypes, effectivePhaseType);
                         if (orderBuildingType && allowedOrderTypes.includes(orderBuildingType)) {
                             activeOrderType = orderBuildingType;
                         } else {
@@ -789,6 +849,45 @@ export class ContentLobby extends React.Component {
                         this.renderTalkPanel()
                     )}
 
+                    {/* Delivered messages — shown during orders_open after Talk rounds */}
+                    {!isDone && gameState.phase_type === 'T' && this.state.talkRoundState === 'orders_open'
+                        && this.state.messages && this.state.messages.length > 0 && (() => {
+                        const mf = this.state.messageFilter;
+                        const filtered = this.state.messages.filter(msg => {
+                            if (mf === 'sent') return msg.sender === yourPower;
+                            if (mf === 'received') return msg.sender !== yourPower;
+                            return true;
+                        });
+                        return (
+                            <div className="game-section">
+                                <div className="game-section-title">MESSAGES</div>
+                                <div className="talk-filter-row">
+                                    {['all', 'sent', 'received'].map(f => (
+                                        <button key={f}
+                                                className={`talk-filter-btn ${mf === f ? 'active' : ''}`}
+                                                onClick={() => this.setState({ messageFilter: f })}>
+                                            {f.toUpperCase()}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="talk-messages">
+                                    {filtered.map((msg, i) => (
+                                        <div key={i} className={`talk-msg ${msg.sender === yourPower ? 'sent' : 'received'}`}>
+                                            <div className="talk-msg-header">
+                                                <strong>{msg.sender}</strong>
+                                                {msg.recipient !== 'GLOBAL' ? ` → ${msg.recipient}` : ' (GLOBAL)'}
+                                            </div>
+                                            <div className="talk-msg-body">{msg.message}</div>
+                                        </div>
+                                    ))}
+                                    {filtered.length === 0 && (
+                                        <div className="talk-no-messages">No {mf} messages.</div>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })()}
+
                     {/* Order type selector — shown during orders_open (Talk) or M/R/A phases */}
                     {!isDone && allowedOrderTypes.length > 0 && !submitted
                         && (gameState.phase_type !== 'T' || this.state.talkRoundState === 'orders_open') && (
@@ -836,27 +935,31 @@ export class ContentLobby extends React.Component {
                                     )}
                                 </div>
                             ))}
-                            {orderedCount > 0 && !submitted && (
+                            {!submitted && (
                                 <div className="order-actions">
-                                    <button
-                                        className="order-action-btn order-clear-btn"
-                                        onClick={() => this.onClearOrders()}
-                                    >CLEAR ALL</button>
+                                    {orderedCount > 0 && (
+                                        <button
+                                            className="order-action-btn order-clear-btn"
+                                            onClick={() => this.onClearOrders()}
+                                        >CLEAR ALL</button>
+                                    )}
                                     <button
                                         className="order-action-btn order-submit-btn"
-                                        onClick={this.onSubmitOrders}
+                                        onClick={this.onDone}
                                         disabled={submitting}
-                                    >{submitting ? 'SUBMITTING...' : 'SUBMIT ORDERS'}</button>
+                                    >{submitting ? 'SUBMITTING...' : (
+                                        (phaseType === 'M' || phaseType === 'T')
+                                            ? `DONE (${orderableCount - orderedCount} will hold)`
+                                            : 'DONE'
+                                    )}</button>
                                 </div>
                             )}
-                            {/* Ready button during orders_open (Talk phase) */}
-                            {gameState.phase_type === 'T' && this.state.talkRoundState === 'orders_open' && submitted && !this.state.readySent && (
-                                <button
-                                    className="talk-ready-btn"
-                                    onClick={this.onReady}
-                                >SUBMIT & READY</button>
+                            {submitted && !this.state.readySent && (
+                                <div className="talk-ready-btn sent" style={{textAlign: 'center', marginTop: 8}}>
+                                    WAITING FOR OTHERS...
+                                </div>
                             )}
-                            {gameState.phase_type === 'T' && this.state.talkRoundState === 'orders_open' && this.state.readySent && (
+                            {this.state.readySent && (
                                 <div className="talk-ready-btn sent" style={{textAlign: 'center', marginTop: 8}}>
                                     WAITING FOR OTHERS...
                                 </div>
@@ -877,14 +980,14 @@ export class ContentLobby extends React.Component {
                         ))}
                     </div>
 
-                    {/* Host controls — only show PROCESS for non-Talk or fallback */}
-                    {isHost && !isDone && gameState.phase_type !== 'T' && (
+                    {/* Host controls */}
+                    {isHost && !isDone && (
                         <button
                             className="landing-btn game-process-btn"
                             onClick={this.onProcess}
                             disabled={processing}
                         >
-                            {processing ? 'PROCESSING...' : 'PROCESS PHASE'}
+                            {processing ? 'PROCESSING...' : (gameState.phase_type === 'T' ? 'FORCE ADVANCE' : 'PROCESS PHASE')}
                         </button>
                     )}
                 </div>

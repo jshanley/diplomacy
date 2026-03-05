@@ -2276,6 +2276,35 @@ button.collapsed .roll {
     font-style: italic;
 }
 
+.talk-filter-row {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+.talk-filter-btn {
+    flex: 1;
+    padding: 3px 0;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: rgba(255,255,255,0.04);
+    color: #4a5568;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.talk-filter-btn:hover {
+    background: rgba(255,255,255,0.08);
+    color: #e2e8f0;
+}
+.talk-filter-btn.active {
+    background: rgba(99,179,237,0.15);
+    color: #63b3ed;
+    border-color: rgba(99,179,237,0.3);
+}
+
 .talk-msg {
     margin-bottom: 8px;
     padding: 6px 8px;

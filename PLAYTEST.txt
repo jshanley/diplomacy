@@ -22,11 +22,11 @@
 
   2. Start the server:
 
-       python -m diplomacy.server.run
+       .venv/bin/python -m diplomacy.server.run
 
      If you need a specific port (default is 8432):
 
-       python -m diplomacy.server.run --port=8432
+       .venv/bin/python -m diplomacy.server.run --port=8432
 
   3. EXPECTED: Terminal prints startup messages. The server is now listening.
 

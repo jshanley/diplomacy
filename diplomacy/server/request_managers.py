@@ -1084,7 +1084,7 @@ def on_set_orders(server, request, connection_handler):
         level.game.set_wait(level.power_name, request.wait)
         Notifier(server, ignore_addresses=[request.address_in_game]).notify_power_wait_flag(
             level.game, level.game.get_power(level.power_name), request.wait)
-    if level.game.does_not_wait():
+    if level.game.does_not_wait() and level.game.phase_type != 'T':
         server.force_game_processing(level.game)
     server.save_game(level.game)
 

@@ -5,6 +5,7 @@ orders/messages through request_managers (same path as the HTTP API).
 LLM calls are offloaded to a ThreadPoolExecutor to avoid blocking the
 event loop.
 """
+import datetime
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
@@ -68,6 +69,12 @@ def _run_bot(server, lobby, player, config):
 
         if game.is_game_done:
             LOGGER.info('Bot %s: game finished', player.display_name)
+            return
+
+        # Stop polling if this bot's power was eliminated
+        bot_power = game.get_power(player.power)
+        if bot_power and bot_power.is_eliminated():
+            LOGGER.info('Bot %s: power %s eliminated, stopping', player.display_name, player.power)
             return
 
         phase = game.get_current_phase()
@@ -137,8 +144,13 @@ def _bot_talk_round(server, game, lobby, player, agent):
                 player.display_name, power_name, game.talk_round)
 
     try:
-        messages = yield IOLoop.current().run_in_executor(
-            _executor, agent.generate_messages, game, power_name)
+        messages = yield gen.with_timeout(
+            datetime.timedelta(seconds=60),
+            IOLoop.current().run_in_executor(
+                _executor, agent.generate_messages, game, power_name))
+    except gen.TimeoutError:
+        LOGGER.warning('Bot %s: message generation timed out', player.display_name)
+        messages = []
     except Exception as exc:
         LOGGER.warning('Bot %s: message generation failed: %s', player.display_name, exc)
         messages = []
@@ -166,8 +178,13 @@ def _bot_submit_orders(server, game, lobby, player, agent):
                 player.display_name, power_name, game.get_current_phase())
 
     try:
-        orders = yield IOLoop.current().run_in_executor(
-            _executor, agent.generate_orders, game, power_name)
+        orders = yield gen.with_timeout(
+            datetime.timedelta(seconds=60),
+            IOLoop.current().run_in_executor(
+                _executor, agent.generate_orders, game, power_name))
+    except gen.TimeoutError:
+        LOGGER.warning('Bot %s: order generation timed out', player.display_name)
+        orders = []
     except Exception as exc:
         LOGGER.warning('Bot %s: order generation failed: %s', player.display_name, exc)
         orders = []
@@ -177,6 +194,14 @@ def _bot_submit_orders(server, game, lobby, player, agent):
         _submit_orders(server, game, lobby, player, orders)
     except Exception as exc:
         LOGGER.warning('Bot %s: failed to submit orders: %s', player.display_name, exc)
+
+    # During Talk orders_open, force_game_processing is skipped,
+    # so we must explicitly signal ready via SetWaitFlag.
+    if game.phase_type == 'T':
+        try:
+            _signal_ready(server, game, lobby, player)
+        except Exception as exc:
+            LOGGER.warning('Bot %s: failed to signal ready: %s', player.display_name, exc)
 
 
 def _attach_token(server, token):

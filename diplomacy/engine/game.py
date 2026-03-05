@@ -1744,8 +1744,8 @@ class Game(Jsonable):
         build_sites = {power_name: self._build_sites(power) if self.phase_type == 'A' else []
                        for power_name, power in self.powers.items()}
 
-        # Movement phase
-        if self.phase_type == 'M':
+        # Movement phase (T = Talk phase, orders are still movement orders)
+        if self.phase_type in ('M', 'T'):
 
             # Building a list of units and homes for each power
             power_units = {power_name: power.units[:] for power_name, power in self.powers.items()}
@@ -2806,8 +2806,6 @@ class Game(Jsonable):
                 power.civil_disorder = civil_disorder
 
         # Processing the game
-        # Talk phase: no engine-level processing. Falls through to _resolve()
-        # which handles phase advancement. Server layer manages round lifecycle.
         if self.phase_type == 'M':
             self._determine_orders()
             self._add_coasts()

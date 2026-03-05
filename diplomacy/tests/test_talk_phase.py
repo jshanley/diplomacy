@@ -370,11 +370,12 @@ def test_talk_messages_not_carried_to_movement():
     assert len(game.messages) == 0
 
 def test_result_history_with_talk():
-    """ Talk phase has empty results in result_history """
+    """ Talk phase has empty results (orders processed in Movement, not Talk) """
     game = _game_with_talk()
     game.process()  # S1901T -> S1901M
     talk_key = game.result_history.first_key()
     assert str(talk_key) == 'S1901T'
+    # Talk phase has no results — orders are processed in the subsequent Movement phase
     assert game.result_history[talk_key] == {}
 
 
@@ -568,7 +569,7 @@ def test_talk_round_to_orders_open():
 
 
 def test_talk_round_to_movement():
-    """After orders_open ready, advances to Movement."""
+    """After orders_open, advances through Movement to next Talk phase."""
     game = _server_game_with_talk()
 
     # Round 1
@@ -579,13 +580,15 @@ def test_talk_round_to_movement():
     game.process()
     assert game.talk_round_state == 'orders_open'
 
-    # Final process -> should advance past Talk to Movement
+    # Final process -> transitions Talk→Movement, processes Movement, advances to Fall Talk
     game.process()
-    assert game.phase_type == 'M'
-    assert game.get_current_phase() == 'S1901M'
-    # Talk state should be reset
-    assert game.talk_round == 0
-    assert game.talk_round_state == ''
+    assert game.phase_type == 'T'
+    assert game.get_current_phase() == 'F1901T'
+    # Round 1 auto-opened on the new Talk phase
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+    # Movement phase should be in history
+    assert 'S1901M' in [str(k) for k in game.state_history.keys()]
 
 
 def test_talk_round_state_serialization():
@@ -629,27 +632,23 @@ def test_talk_round_complete_skips_dummy():
 
 
 def test_talk_round_resets_on_new_phase():
-    """New Talk phase starts at round 0 after full cycle."""
+    """New Talk phase auto-opens round 1 after full cycle."""
     game = _server_game_with_talk()
 
     # Go through full Talk cycle: round 1, round 2, orders_open, then advance
     game.process()  # round 1
     game.process()  # round 2
     game.process()  # orders_open
-    game.process()  # advance to Movement
+    game.process()  # -> Movement processed -> Fall Talk (round 1 auto-opened)
 
-    assert game.phase_type == 'M'
-    assert game.talk_round == 0
-    assert game.talk_round_state == ''
-
-    # Process Movement to get to Fall Talk
-    game.process()  # S1901M -> F1901T
     assert game.phase_type == 'T'
-    assert game.talk_round == 0
-
-    # First process of new Talk phase opens round 1
-    game.process()
+    # Round 1 auto-opened
     assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
+
+    # Next process advances to round 2
+    game.process()
+    assert game.talk_round == 2
     assert game.talk_round_state == 'round_open'
 
 
@@ -670,20 +669,18 @@ def test_talk_num_rounds_config():
     game.process()
     assert game.talk_round_state == 'orders_open'
 
-    # Then advance to Movement
+    # Then advance through Movement to next Talk phase
     game.process()
-    assert game.phase_type == 'M'
+    assert game.phase_type == 'T'
+    assert game.get_current_phase() == 'F1901T'
 
 
 def test_talk_round_complete_false_not_talk_phase():
     """talk_round_complete() returns False when not in a Talk phase."""
     game = _server_game_with_talk()
-    # Advance through full Talk cycle to reach Movement
-    game.process()  # round 1
-    game.process()  # round 2
-    game.process()  # orders_open
-    game.process()  # -> Movement
-    assert game.phase_type == 'M'
+    # Manually set to Movement to test non-Talk phase behavior
+    game.phase = 'SPRING 1901 MOVEMENT'
+    game.phase_type = 'M'
     assert game.talk_round_complete() is False
 
 
@@ -836,9 +833,10 @@ def test_talk_num_rounds_one():
     game.process()
     assert game.talk_round_state == 'orders_open'
 
-    # Then advance to Movement
+    # Then advance through Movement to next Talk phase
     game.process()
-    assert game.phase_type == 'M'
+    assert game.phase_type == 'T'
+    assert game.get_current_phase() == 'F1901T'
 
 
 def test_talk_num_rounds_serialization():
@@ -853,29 +851,25 @@ def test_talk_round_multi_year_server_game():
     """ServerGame Talk round state resets properly across multiple years."""
     game = _server_game_with_talk()
 
+    # Open initial round 1 (simulates lobby start_game calling process())
+    game.process()
+
     for year_cycle in range(3):
-        # Spring Talk
+        # Spring Talk — round 1 already open
         assert game.phase_type == 'T', f'Year cycle {year_cycle}: expected Talk, got {game.phase_type}'
-        assert game.talk_round == 0
-        game.process()  # round 1
+        assert game.talk_round == 1
+        assert game.talk_round_state == 'round_open'
         game.process()  # round 2
         game.process()  # orders_open
-        game.process()  # -> Movement
+        game.process()  # -> Movement processed -> Fall Talk (round 1 auto-opened)
 
-        assert game.phase_type == 'M'
-        assert game.talk_round == 0
-        game.process()  # Movement -> Fall Talk
-
-        # Fall Talk
+        # Fall Talk — round 1 auto-opened
         assert game.phase_type == 'T'
-        assert game.talk_round == 0
-        game.process()  # round 1
+        assert game.talk_round == 1
+        assert game.talk_round_state == 'round_open'
         game.process()  # round 2
         game.process()  # orders_open
-        game.process()  # -> Movement
-
-        assert game.phase_type == 'M'
-        game.process()  # Movement -> next Spring Talk
+        game.process()  # -> Movement processed -> next Spring Talk (round 1 auto-opened)
 
 
 def test_process_return_values_during_talk_rounds():
@@ -902,23 +896,18 @@ def test_process_return_values_during_talk_rounds():
 
 
 def test_talk_round_state_not_affected_by_movement_process():
-    """Processing a Movement phase doesn't alter talk round state."""
+    """After Talk→Movement→Talk, new Talk phase auto-opens round 1."""
     game = _server_game_with_talk()
     # Complete Talk cycle
     game.process()  # round 1
     game.process()  # round 2
     game.process()  # orders_open
-    game.process()  # -> Movement
+    game.process()  # -> Movement processed -> Fall Talk (round 1 auto-opened)
 
-    assert game.phase_type == 'M'
-    assert game.talk_round == 0
-    assert game.talk_round_state == ''
-
-    # Process Movement
-    game.process()
-    # Should still be clean
-    assert game.talk_round == 0
-    assert game.talk_round_state == ''
+    # New Talk phase has round 1 auto-opened
+    assert game.phase_type == 'T'
+    assert game.talk_round == 1
+    assert game.talk_round_state == 'round_open'
 
 
 # ===========================================================================
@@ -1229,9 +1218,8 @@ def test_talk_messages_in_phase_history_after_advance():
 
     game.process()  # round 2
     game.process()  # orders_open
-    game.process()  # -> Movement
+    game.process()  # -> Movement processed -> Fall Talk
 
-    assert game.phase_type == 'M'
     assert talk_phase in game.message_history
     talk_msgs = game.message_history[talk_phase]
     assert len(talk_msgs) == 1
@@ -1759,12 +1747,10 @@ def test_communique_counts_persist_into_fall():
     # Complete Spring Talk + Movement
     game.process()  # round 2
     game.process()  # orders_open
-    game.process()  # -> Movement
-    game.process()  # -> Fall Talk
+    game.process()  # -> Movement processed -> Fall Talk (round 1 auto-opened)
 
     assert game.phase_type == 'T'
     assert game.current_short_phase.startswith('F')
-    game.process()  # open Fall round 1
 
     # France already used their communique in Spring
     _, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Fall communique')
@@ -1836,24 +1822,22 @@ def test_full_cycle_messages_in_history_after_movement():
     game.process()  # round 2
     _simulate_send_message(game, 'GERMANY', 'ITALY', 'R2 msg')
     game.process()  # orders_open
-    game.process()  # -> Movement
+    game.process()  # -> Movement processed -> Fall Talk
 
-    assert game.phase_type == 'M'
     assert talk_phase in game.message_history
     assert len(game.message_history[talk_phase]) == 2
 
 
 def test_no_messages_carried_from_talk_to_movement():
-    """game.messages is empty in Movement phase (messages archived to history)."""
+    """game.messages is empty after Talk phase (messages archived to history)."""
     game = _server_game_with_talk()
 
     game.process()  # open round 1
     _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello')
     game.process()  # round 2
     game.process()  # orders_open
-    game.process()  # -> Movement
+    game.process()  # -> Movement processed -> Fall Talk
 
-    assert game.phase_type == 'M'
     assert len(game.messages) == 0
 
 
@@ -1965,33 +1949,32 @@ def test_multi_year_clean_state():
     """Talk state fully resets each Talk phase across multiple years."""
     game = _server_game_with_talk()
 
+    # Open initial round 1 (simulates lobby start)
+    game.process()
+
     for _ in range(2):
-        # Spring Talk
+        # Spring Talk — round 1 already open
         assert game.phase_type == 'T'
-        assert game.talk_round == 0
-        assert game.talk_round_state == ''
+        assert game.talk_round == 1
+        assert game.talk_round_state == 'round_open'
         assert game.talk_held_messages == []
         assert game.talk_message_counts == {}
 
-        game.process()  # round 1
         _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'msg')
         game.process()  # round 2
         game.process()  # orders_open
-        game.process()  # -> Movement
-        game.process()  # -> Fall Talk
+        game.process()  # -> Movement processed -> Fall Talk (round 1 auto-opened)
 
-        # Fall Talk
+        # Fall Talk — round 1 auto-opened, state clean
         assert game.phase_type == 'T'
-        assert game.talk_round == 0
-        assert game.talk_round_state == ''
+        assert game.talk_round == 1
+        assert game.talk_round_state == 'round_open'
         assert game.talk_held_messages == []
         assert game.talk_message_counts == {}
 
-        game.process()  # round 1
         game.process()  # round 2
         game.process()  # orders_open
-        game.process()  # -> Movement
-        game.process()  # -> next Spring Talk
+        game.process()  # -> Movement processed -> next Spring Talk (round 1 auto-opened)
 
 
 # --- _generate_press_log isolation ---
