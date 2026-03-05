@@ -95,6 +95,12 @@ export const NOTIFICATION_MANAGERS = {
     power_wait_flag: function (game, notification) {
         game.local.setWait(notification.power_name, notification.wait);
     },
+    talk_round_update: function (game, notification) {
+        // Client can store talk round state locally if needed
+    },
+    talk_press_log: function (game, notification) {
+        // Client can consume press log entries via callbacks
+    },
     vote_count_updated: function (game, notification) {
         // Nothing currently done.
     },

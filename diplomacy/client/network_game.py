@@ -155,6 +155,8 @@ class NetworkGame(Game):
     add_on_power_vote_updated = _callback_setting_method(notifications.PowerVoteUpdated)
     add_on_power_wait_flag = _callback_setting_method(notifications.PowerWaitFlag)
     add_on_powers_controllers = _callback_setting_method(notifications.PowersControllers)
+    add_on_talk_round_update = _callback_setting_method(notifications.TalkRoundUpdate)
+    add_on_talk_press_log = _callback_setting_method(notifications.TalkPressLog)
     add_on_vote_count_updated = _callback_setting_method(notifications.VoteCountUpdated)
     add_on_vote_updated = _callback_setting_method(notifications.VoteUpdated)
 
@@ -172,6 +174,8 @@ class NetworkGame(Game):
     clear_on_power_vote_updated = _callback_clearing_method(notifications.PowerVoteUpdated)
     clear_on_power_wait_flag = _callback_clearing_method(notifications.PowerWaitFlag)
     clear_on_powers_controllers = _callback_clearing_method(notifications.PowersControllers)
+    clear_on_talk_round_update = _callback_clearing_method(notifications.TalkRoundUpdate)
+    clear_on_talk_press_log = _callback_clearing_method(notifications.TalkPressLog)
     clear_on_vote_count_updated = _callback_clearing_method(notifications.VoteCountUpdated)
     clear_on_vote_updated = _callback_clearing_method(notifications.VoteUpdated)
 

@@ -37,7 +37,9 @@ class ServerGame(Game):
           special Power object (diplomacy.Power) used to manage omniscient tokens.
     """
     __slots__ = ['server', 'omniscient_usernames', 'moderator_usernames', 'observer', 'omniscient',
-                 'talk_round', 'talk_round_state', 'talk_ready', 'talk_held_messages']
+                 'talk_round', 'talk_round_state', 'talk_ready', 'talk_held_messages',
+                 'talk_message_counts', 'talk_communique_counts',
+                 '_last_delivered_messages', '_last_closed_round', '_last_press_log']
     model = parsing.update_model(Game.model, {
         strings.MODERATOR_USERNAMES: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
         strings.OBSERVER: parsing.OptionalValueType(parsing.JsonableClassType(Power)),
@@ -47,6 +49,8 @@ class ServerGame(Game):
         strings.TALK_ROUND_STATE: parsing.DefaultValueType(str, ''),
         strings.TALK_READY: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
         strings.TALK_HELD_MESSAGES: parsing.DefaultValueType(parsing.SequenceType(dict), []),
+        strings.TALK_MESSAGE_COUNTS: parsing.DefaultValueType(parsing.DictType(str, int), {}),
+        strings.TALK_COMMUNIQUE_COUNTS: parsing.DefaultValueType(parsing.DictType(str, int), {}),
     })
 
     def __init__(self, server=None, **kwargs):
@@ -60,6 +64,11 @@ class ServerGame(Game):
         self.talk_round_state = ''
         self.talk_ready = set()
         self.talk_held_messages = []
+        self.talk_message_counts = {}
+        self.talk_communique_counts = {}
+        self._last_delivered_messages = []
+        self._last_closed_round = 0
+        self._last_press_log = []
 
         super(ServerGame, self).__init__(**kwargs)
         assert self.is_server_game()
@@ -473,10 +482,49 @@ class ServerGame(Game):
         self.talk_round = round_number
         self.talk_round_state = strings.ROUND_OPEN
         self.talk_ready = set()
+        self.talk_message_counts = {}
+        # Reset communique counts at the start of each year (Spring round 1)
+        if round_number == 1 and self.current_short_phase.startswith('S'):
+            self.talk_communique_counts = {}
+
+    def _generate_press_log(self, round_number):
+        """Build press log entries (metadata only) for the given round."""
+        entries = []
+        for held in self.talk_held_messages:
+            if held.get('round') == round_number:
+                entries.append({
+                    'sender': held['sender'],
+                    'recipient': held['recipient'],
+                    'char_count': len(held.get('message', '')),
+                    'status': held['status'],
+                    'type': held['type'],
+                })
+        return entries
 
     def _close_talk_round(self):
-        """Close the current talk round."""
+        """Close the current talk round and deliver valid held messages."""
         self.talk_round_state = strings.ROUND_CLOSED
+        self._last_closed_round = self.talk_round
+        # Generate press log before clearing messages
+        self._last_press_log = self._generate_press_log(self.talk_round)
+        delivered = []
+        remaining = []
+        for held in self.talk_held_messages:
+            if held.get('round') == self.talk_round:
+                if held.get('status') == 'valid':
+                    msg = Message(
+                        sender=held['sender'],
+                        recipient=held['recipient'],
+                        phase=held['phase'],
+                        message=held['message'],
+                    )
+                    msg.time_sent = self.add_message(msg)
+                    delivered.append(msg)
+                # else: void message — discard (not delivered, not kept)
+            else:
+                remaining.append(held)
+        self.talk_held_messages = remaining
+        self._last_delivered_messages = delivered
 
     def _reset_talk_state(self):
         """Reset talk state for next Talk phase."""
@@ -484,6 +532,7 @@ class ServerGame(Game):
         self.talk_round_state = ''
         self.talk_ready = set()
         self.talk_held_messages = []
+        self.talk_message_counts = {}
 
     def talk_round_complete(self):
         """Check if all non-eliminated controlled powers have signaled ready."""

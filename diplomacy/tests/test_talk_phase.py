@@ -8,6 +8,7 @@ from diplomacy.engine.game import Game
 from diplomacy.engine.map import Map
 from diplomacy.engine.message import Message
 from diplomacy.server.server_game import ServerGame
+from diplomacy.utils import strings
 from diplomacy.utils.order_results import BOUNCE
 
 
@@ -502,13 +503,11 @@ def test_game_not_done_after_talk():
 def _server_game_with_talk(**kwargs):
     """Helper: create a ServerGame with Talk phases enabled and status=active."""
     rules = kwargs.pop('rules', ['SOLITAIRE', 'NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE'])
-    from diplomacy.utils import strings
     return ServerGame(status=strings.ACTIVE, rules=rules, **kwargs)
 
 
 def _server_game_with_controlled_powers(**kwargs):
     """Helper: create a ServerGame with Talk enabled and two controlled powers."""
-    from diplomacy.utils import strings
     rules = kwargs.pop('rules', ['NO_PRESS', 'IGNORE_ERRORS', 'POWER_CHOICE'])
     game = ServerGame(status=strings.ACTIVE, rules=rules, **kwargs)
     # Control two powers
@@ -920,3 +919,1204 @@ def test_talk_round_state_not_affected_by_movement_process():
     # Should still be clean
     assert game.talk_round == 0
     assert game.talk_round_state == ''
+
+
+# ===========================================================================
+# STEP 3 — BATCH MESSAGE COLLECTION TESTS
+# ===========================================================================
+
+def _simulate_send_message(game, sender, recipient, body):
+    """Simulate what on_send_game_message does during a Talk round.
+
+    Returns (held_dict, status) or raises if messages are blocked.
+    """
+    if (game.phase_type == 'T'
+            and 'NO_TALK' not in game.rules
+            and game.talk_round_state == strings.ROUND_OPEN):
+        is_communique = (recipient == 'GLOBAL')
+
+        status = 'valid'
+        void_reason = ''
+
+        if is_communique:
+            comm_count = game.talk_communique_counts.get(sender, 0)
+            game.talk_communique_counts[sender] = comm_count + 1
+            if comm_count >= game.talk_max_communiques_per_year:
+                status = 'void'
+                void_reason = 'Communique limit exceeded (%d per year)' % game.talk_max_communiques_per_year
+            elif len(body) > game.talk_max_communique_chars:
+                status = 'void'
+                void_reason = 'Communique too long (%d char limit)' % game.talk_max_communique_chars
+        else:
+            current_count = game.talk_message_counts.get(sender, 0)
+            game.talk_message_counts[sender] = current_count + 1
+            if current_count >= game.talk_max_messages_per_round:
+                status = 'void'
+                void_reason = 'Message limit exceeded (%d per round)' % game.talk_max_messages_per_round
+            elif len(body) > game.talk_max_chars_per_message:
+                status = 'void'
+                void_reason = 'Message too long (%d char limit)' % game.talk_max_chars_per_message
+
+        held = {
+            'sender': sender,
+            'recipient': recipient,
+            'phase': game.current_short_phase,
+            'message': body,
+            'round': game.talk_round,
+            'status': status,
+            'void_reason': void_reason,
+            'type': 'communique' if is_communique else 'private',
+        }
+        game.talk_held_messages.append(held)
+        return held, status
+
+    if (game.phase_type == 'T'
+            and 'NO_TALK' not in game.rules
+            and game.talk_round_state in (strings.ORDERS_OPEN, strings.ROUND_CLOSED)):
+        raise RuntimeError('Messages can only be sent during talk rounds.')
+
+    return None, None
+
+
+def test_message_held_during_round_open():
+    """Messages submitted during round_open go into talk_held_messages, not game.messages."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    assert game.talk_round_state == strings.ROUND_OPEN
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello England!')
+    assert status == 'valid'
+    assert len(game.talk_held_messages) == 1
+    assert game.talk_held_messages[0]['sender'] == 'FRANCE'
+    assert game.talk_held_messages[0]['recipient'] == 'ENGLAND'
+    assert game.talk_held_messages[0]['message'] == 'Hello England!'
+    assert game.talk_held_messages[0]['round'] == 1
+    assert game.talk_held_messages[0]['status'] == 'valid'
+    assert game.talk_held_messages[0]['type'] == 'private'
+    # Message should NOT be in game.messages (not delivered yet)
+    assert len(game.messages) == 0
+
+
+def test_message_count_incremented():
+    """talk_message_counts tracks per-power submission count."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'msg1')
+    assert game.talk_message_counts['FRANCE'] == 1
+
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'msg2')
+    assert game.talk_message_counts['FRANCE'] == 2
+
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'msg3')
+    assert game.talk_message_counts['ENGLAND'] == 1
+
+
+def test_void_message_over_count_limit():
+    """Message exceeding per-round count limit is stored with status='void'."""
+    game = _server_game_with_talk(talk_max_messages_per_round=2)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'msg1')
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'msg2')
+    held, status = _simulate_send_message(game, 'FRANCE', 'ITALY', 'msg3')
+
+    assert status == 'void'
+    assert held['void_reason'] == 'Message limit exceeded (2 per round)'
+    assert len(game.talk_held_messages) == 3
+    assert game.talk_held_messages[2]['status'] == 'void'
+
+
+def test_void_message_over_char_limit():
+    """Message exceeding character limit is stored with status='void'."""
+    game = _server_game_with_talk(talk_max_chars_per_message=10)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'This is way too long')
+    assert status == 'void'
+    assert 'char limit' in held['void_reason']
+
+
+def test_void_message_still_counts_against_quota():
+    """Void messages increment the counter (prevents probing)."""
+    game = _server_game_with_talk(talk_max_messages_per_round=2, talk_max_chars_per_message=5)
+    game.process()  # open round 1
+
+    # First message is too long -> void
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Way too long message')
+    assert game.talk_message_counts['FRANCE'] == 1
+
+    # Second message is valid
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'Hi')
+    assert game.talk_message_counts['FRANCE'] == 2
+
+    # Third message exceeds count limit -> void
+    held, status = _simulate_send_message(game, 'FRANCE', 'ITALY', 'Hey')
+    assert status == 'void'
+    assert 'limit exceeded' in held['void_reason']
+
+
+def test_message_counts_reset_on_new_round():
+    """talk_message_counts resets when a new round opens."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'round 1 msg')
+    assert game.talk_message_counts['FRANCE'] == 1
+
+    game.process()  # close round 1, open round 2
+    assert game.talk_message_counts == {}
+
+
+def test_message_blocked_during_orders_open():
+    """Messages cannot be sent during orders_open state."""
+    game = _server_game_with_talk()
+    game.process()  # round 1
+    game.process()  # round 2
+    game.process()  # orders_open
+    assert game.talk_round_state == strings.ORDERS_OPEN
+
+    try:
+        _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Should fail')
+        assert False, 'Should have raised'
+    except RuntimeError as e:
+        assert 'talk rounds' in str(e)
+
+
+def test_config_defaults():
+    """Default config values for message limits."""
+    game = _server_game_with_talk()
+    assert game.talk_max_messages_per_round == 5
+    assert game.talk_max_chars_per_message == 500
+
+
+def test_config_custom_limits():
+    """Custom message limits survive creation."""
+    game = _server_game_with_talk(talk_max_messages_per_round=3, talk_max_chars_per_message=200)
+    assert game.talk_max_messages_per_round == 3
+    assert game.talk_max_chars_per_message == 200
+
+
+def test_config_serialization_round_trip():
+    """Message limit config survives to_dict/from_dict."""
+    game = _server_game_with_talk(talk_max_messages_per_round=3, talk_max_chars_per_message=200)
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_max_messages_per_round == 3
+    assert restored.talk_max_chars_per_message == 200
+
+
+def test_talk_message_counts_serialization():
+    """talk_message_counts survives serialization."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'test')
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_message_counts == {'FRANCE': 1}
+
+
+def test_held_messages_serialization():
+    """talk_held_messages survives serialization with full structure."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello!')
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert len(restored.talk_held_messages) == 1
+    assert restored.talk_held_messages[0]['sender'] == 'FRANCE'
+    assert restored.talk_held_messages[0]['status'] == 'valid'
+    assert restored.talk_held_messages[0]['type'] == 'private'
+
+
+def test_multiple_powers_submit_messages():
+    """Multiple powers can submit messages in the same round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'From France')
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'From England')
+    _simulate_send_message(game, 'GERMANY', 'FRANCE', 'From Germany')
+
+    assert len(game.talk_held_messages) == 3
+    assert game.talk_message_counts['FRANCE'] == 1
+    assert game.talk_message_counts['ENGLAND'] == 1
+    assert game.talk_message_counts['GERMANY'] == 1
+
+
+# ===========================================================================
+# STEP 4 — BATCH DELIVERY TESTS
+# ===========================================================================
+
+def test_valid_messages_delivered_on_round_close():
+    """Valid held messages appear in game.messages after _close_talk_round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello England')
+    _simulate_send_message(game, 'GERMANY', 'FRANCE', 'Hello France')
+    assert len(game.messages) == 0  # not yet delivered
+
+    game.process()  # close round 1, open round 2
+    # Messages should now be in game.messages
+    assert len(game.messages) == 2
+    senders = {msg.sender for msg in game.messages.values()}
+    assert senders == {'FRANCE', 'GERMANY'}
+
+
+def test_void_messages_not_delivered():
+    """Void messages do not appear in game.messages after round close."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'First msg')
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'Over limit')  # void
+
+    game.process()  # close round 1, open round 2
+    # Only the valid message should be delivered
+    assert len(game.messages) == 1
+    assert list(game.messages.values())[0].message == 'First msg'
+
+
+def test_delivered_messages_have_timestamps():
+    """Delivered messages have server-generated timestamps."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Test')
+    game.process()  # close round 1, open round 2
+
+    for msg in game.messages.values():
+        assert msg.time_sent is not None
+        assert msg.time_sent > 0
+
+
+def test_round1_messages_visible_when_round2_opens():
+    """Messages from round 1 are in game.messages when round 2 is active."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Round 1 msg')
+    game.process()  # close round 1, open round 2
+
+    assert game.talk_round == 2
+    assert game.talk_round_state == strings.ROUND_OPEN
+    assert len(game.messages) == 1
+    assert list(game.messages.values())[0].message == 'Round 1 msg'
+
+
+def test_round2_messages_delivered_on_close():
+    """Messages from round 2 are also delivered when round 2 closes."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1 msg')
+
+    game.process()  # close round 1, open round 2
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'R2 msg')
+
+    game.process()  # close round 2 (orders_open)
+    assert len(game.messages) == 2
+
+
+def test_talk_messages_in_phase_history_after_advance():
+    """After Talk→Movement, Talk messages are in message_history."""
+    game = _server_game_with_talk()
+    talk_phase = game.current_short_phase  # S1901T
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Diplomacy!')
+
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+
+    assert game.phase_type == 'M'
+    assert talk_phase in game.message_history
+    talk_msgs = game.message_history[talk_phase]
+    assert len(talk_msgs) == 1
+
+
+def test_last_delivered_messages_populated_on_round_close():
+    """_last_delivered_messages is populated with delivered Message objects."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Test')
+    _simulate_send_message(game, 'GERMANY', 'ITALY', 'Another')
+
+    game.process()  # close round 1, open round 2
+    # _last_delivered_messages holds the Message objects from the just-closed round
+    # (In server flow, _process_game uses these for notifications then clears them)
+    assert len(game._last_delivered_messages) == 2
+    assert game._last_delivered_messages[0].sender == 'FRANCE'
+    assert game._last_delivered_messages[1].sender == 'GERMANY'
+    # And the messages ARE in game.messages (delivered)
+    assert len(game.messages) == 2
+
+
+def test_void_messages_removed_from_held_after_round_close():
+    """Void messages for the closed round are removed from talk_held_messages."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Valid')
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'Over limit')  # void
+
+    game.process()  # close round 1, open round 2
+    # Both valid and void for round 1 should be cleared from held messages
+    assert len(game.talk_held_messages) == 0
+
+
+# ===========================================================================
+# STEP 5 — CLIENT NOTIFICATION TESTS
+# ===========================================================================
+
+def test_talk_round_update_notification_class():
+    """TalkRoundUpdate notification serializes and deserializes correctly."""
+    from diplomacy.communication.notifications import TalkRoundUpdate
+    notif = TalkRoundUpdate(
+        token='test_token',
+        game_id='test_game',
+        game_role='FRANCE',
+        talk_round=2,
+        talk_round_state=strings.ROUND_OPEN,
+        talk_num_rounds=3,
+    )
+    assert notif.talk_round == 2
+    assert notif.talk_round_state == strings.ROUND_OPEN
+    assert notif.talk_num_rounds == 3
+
+    # Round-trip via dict
+    notif_dict = notif.to_dict()
+    assert notif_dict['talk_round'] == 2
+    assert notif_dict['talk_round_state'] == 'round_open'
+    assert notif_dict['talk_num_rounds'] == 3
+
+
+def test_talk_round_update_in_notification_mapping():
+    """TalkRoundUpdate is registered in the client notification MAPPING."""
+    from diplomacy.client.notification_managers import MAPPING
+    from diplomacy.communication.notifications import TalkRoundUpdate
+    assert TalkRoundUpdate in MAPPING
+
+
+def test_talk_round_update_callback_on_network_game():
+    """NetworkGame has add_on_talk_round_update callback setter."""
+    from diplomacy.client.network_game import NetworkGame
+    assert hasattr(NetworkGame, 'add_on_talk_round_update')
+    assert hasattr(NetworkGame, 'clear_on_talk_round_update')
+
+
+# ===========================================================================
+# STEP 6 — TIMER/DEADLINE TESTS
+# ===========================================================================
+
+def test_talk_deadline_defaults():
+    """Default deadline values are 0 (no auto-advance)."""
+    game = _server_game_with_talk()
+    assert game.talk_round_deadline == 0
+    assert game.talk_orders_deadline == 0
+
+
+def test_talk_deadline_custom():
+    """Custom deadline values survive creation."""
+    game = _server_game_with_talk(talk_round_deadline=60, talk_orders_deadline=120)
+    assert game.talk_round_deadline == 60
+    assert game.talk_orders_deadline == 120
+
+
+def test_talk_deadline_serialization():
+    """Deadline config survives to_dict/from_dict."""
+    game = _server_game_with_talk(talk_round_deadline=30, talk_orders_deadline=90)
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_round_deadline == 30
+    assert restored.talk_orders_deadline == 90
+
+
+def test_talk_deadline_zero_means_no_auto_advance():
+    """With deadline=0, round advancement only happens via ready signaling."""
+    game = _server_game_with_talk(talk_round_deadline=0)
+    game.process()  # open round 1
+    assert game.talk_round == 1
+    assert game.talk_round_state == strings.ROUND_OPEN
+    # With no deadline, game waits for all powers to signal ready
+    # (No auto-advance happens without server scheduler)
+
+
+# ===========================================================================
+# STEP 7 — PUBLIC COMMUNIQUE TESTS
+# ===========================================================================
+
+def test_communique_held_during_round():
+    """Global messages are held as communiques during talk rounds."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Public announcement!')
+    assert len(game.talk_held_messages) == 1
+    assert game.talk_held_messages[0]['type'] == 'communique'
+    assert game.talk_held_messages[0]['recipient'] == 'GLOBAL'
+    assert game.talk_held_messages[0]['status'] == 'valid'
+
+
+def test_communique_separate_from_private_quota():
+    """Communiques don't count against per-round private message limit."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    # Send 1 private message (hits limit)
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Private msg')
+    assert game.talk_message_counts['FRANCE'] == 1
+
+    # Communique should still be valid (separate quota)
+    held, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Public msg')
+    assert status == 'valid'
+    assert held['type'] == 'communique'
+    # Private count unchanged by communique
+    assert game.talk_message_counts['FRANCE'] == 1
+
+
+def test_communique_limit_per_year():
+    """Second communique in same year is void."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=1)
+    game.process()  # open round 1
+
+    held1, status1 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'First communique')
+    assert status1 == 'valid'
+
+    held2, status2 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Second communique')
+    assert status2 == 'void'
+    assert 'limit exceeded' in held2['void_reason']
+
+
+def test_communique_limit_resets_on_new_year():
+    """Communique count resets at Spring Talk (new year)."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=1)
+
+    # Spring Talk
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Spring communique')
+    assert game.talk_communique_counts['FRANCE'] == 1
+
+    # Complete spring talk and movement
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+    game.process()  # -> Fall Talk (or retreats)
+
+    # Process until we hit next Spring Talk
+    # Fall Talk
+    if game.phase_type == 'T':
+        # Fall Talk — communique count should NOT reset yet
+        game.process()  # open round 1 of Fall
+        assert game.talk_communique_counts.get('FRANCE', 0) == 1  # still from spring
+
+        # Complete Fall
+        game.process()  # round 2
+        game.process()  # orders_open
+        game.process()  # -> Fall Movement
+        game.process()  # -> Winter or Spring
+
+    # Keep advancing until Spring Talk of next year
+    while game.phase_type != 'T' or not game.current_short_phase.startswith('S'):
+        game.process()
+
+    # Now at Spring Talk of new year — process to open round 1
+    game.process()  # open round 1
+    # Communique count should be reset
+    assert game.talk_communique_counts.get('FRANCE', 0) == 0
+
+
+def test_communique_char_limit():
+    """Communique exceeding char limit is void."""
+    game = _server_game_with_talk(talk_max_communique_chars=10)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'This communique is way too long')
+    assert status == 'void'
+    assert 'char limit' in held['void_reason']
+
+
+def test_communique_delivered_on_round_close():
+    """Valid communiques are delivered as GLOBAL recipient messages."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Public!')
+    game.process()  # close round 1, open round 2
+
+    # Communique should be in game.messages with GLOBAL recipient
+    assert len(game.messages) == 1
+    msg = list(game.messages.values())[0]
+    assert msg.recipient == 'GLOBAL'
+    assert msg.sender == 'FRANCE'
+
+
+def test_communique_counts_serialization():
+    """talk_communique_counts survives serialization."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Public!')
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+    assert restored.talk_communique_counts == {'FRANCE': 1}
+
+
+def test_communique_config_defaults():
+    """Default communique config values."""
+    game = _server_game_with_talk()
+    assert game.talk_max_communiques_per_year == 1
+    assert game.talk_max_communique_chars == 500
+
+
+# ===========================================================================
+# STEP 8 — PRESS LOG TESTS
+# ===========================================================================
+
+def test_press_log_contains_metadata_only():
+    """Press log entries contain sender, recipient, char_count, status, type — no message body."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello England!')
+    game.process()  # close round 1, open round 2
+
+    assert len(game._last_press_log) == 1
+    entry = game._last_press_log[0]
+    assert entry['sender'] == 'FRANCE'
+    assert entry['recipient'] == 'ENGLAND'
+    assert entry['char_count'] == len('Hello England!')
+    assert entry['status'] == 'valid'
+    assert entry['type'] == 'private'
+    # No message body in press log
+    assert 'message' not in entry
+
+
+def test_press_log_includes_void_messages():
+    """Void messages appear in the press log."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Valid')
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'Over limit')  # void
+
+    game.process()  # close round 1, open round 2
+
+    assert len(game._last_press_log) == 2
+    statuses = {e['status'] for e in game._last_press_log}
+    assert statuses == {'valid', 'void'}
+
+
+def test_press_log_empty_round():
+    """An empty round produces an empty press log."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    # No messages sent
+
+    game.process()  # close round 1, open round 2
+    assert game._last_press_log == []
+
+
+def test_press_log_per_round_separation():
+    """Each round's press log only contains entries from that round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1')
+    game.process()  # close round 1, open round 2
+
+    r1_log = list(game._last_press_log)
+    assert len(r1_log) == 1
+    assert r1_log[0]['sender'] == 'FRANCE'
+
+    _simulate_send_message(game, 'GERMANY', 'ITALY', 'R2 msg')
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'R2 reply')
+    game.process()  # close round 2, orders_open
+
+    r2_log = game._last_press_log
+    assert len(r2_log) == 2
+    senders = {e['sender'] for e in r2_log}
+    assert senders == {'GERMANY', 'ENGLAND'}
+
+
+def test_press_log_includes_communiques():
+    """Communiques appear in press log with type='communique'."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Private msg')
+    _simulate_send_message(game, 'GERMANY', 'GLOBAL', 'Public announcement')
+
+    game.process()  # close round 1, open round 2
+
+    assert len(game._last_press_log) == 2
+    types = {e['type'] for e in game._last_press_log}
+    assert types == {'private', 'communique'}
+
+
+def test_press_log_notification_class():
+    """TalkPressLog notification serializes and deserializes correctly."""
+    from diplomacy.communication.notifications import TalkPressLog
+    entries = [
+        {'sender': 'FRANCE', 'recipient': 'ENGLAND', 'char_count': 14, 'status': 'valid', 'type': 'private'},
+        {'sender': 'GERMANY', 'recipient': 'GLOBAL', 'char_count': 20, 'status': 'valid', 'type': 'communique'},
+    ]
+    notif = TalkPressLog(
+        token='test_token',
+        game_id='test_game',
+        game_role='FRANCE',
+        talk_round=1,
+        entries=entries,
+    )
+    assert notif.talk_round == 1
+    assert len(notif.entries) == 2
+
+    notif_dict = notif.to_dict()
+    assert notif_dict['talk_round'] == 1
+    assert len(notif_dict['entries']) == 2
+    assert notif_dict['entries'][0]['sender'] == 'FRANCE'
+
+
+def test_press_log_in_notification_mapping():
+    """TalkPressLog is registered in the client notification MAPPING."""
+    from diplomacy.client.notification_managers import MAPPING
+    from diplomacy.communication.notifications import TalkPressLog
+    assert TalkPressLog in MAPPING
+
+
+def test_press_log_callback_on_network_game():
+    """NetworkGame has add_on_talk_press_log callback setter."""
+    from diplomacy.client.network_game import NetworkGame
+    assert hasattr(NetworkGame, 'add_on_talk_press_log')
+    assert hasattr(NetworkGame, 'clear_on_talk_press_log')
+
+
+# ===========================================================================
+# ADDITIONAL EDGE CASE & INTEGRATION TESTS
+# ===========================================================================
+
+# --- Boundary conditions ---
+
+def test_message_exactly_at_char_limit():
+    """A message exactly at the char limit is valid."""
+    game = _server_game_with_talk(talk_max_chars_per_message=10)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'A' * 10)
+    assert status == 'valid'
+
+
+def test_message_one_over_char_limit():
+    """A message one char over the limit is void."""
+    game = _server_game_with_talk(talk_max_chars_per_message=10)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'A' * 11)
+    assert status == 'void'
+
+
+def test_last_valid_message_at_count_limit():
+    """The Nth message (at limit) is valid; the N+1th is void."""
+    game = _server_game_with_talk(talk_max_messages_per_round=2)
+    game.process()  # open round 1
+
+    _, s1 = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'msg1')
+    _, s2 = _simulate_send_message(game, 'FRANCE', 'GERMANY', 'msg2')
+    _, s3 = _simulate_send_message(game, 'FRANCE', 'ITALY', 'msg3')
+
+    assert s1 == 'valid'
+    assert s2 == 'valid'
+    assert s3 == 'void'
+
+
+def test_zero_message_limit_all_void():
+    """With talk_max_messages_per_round=0, every message is void."""
+    game = _server_game_with_talk(talk_max_messages_per_round=0)
+    game.process()  # open round 1
+
+    _, s1 = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hi')
+    assert s1 == 'void'
+    assert game.talk_message_counts['FRANCE'] == 1
+
+
+def test_zero_communique_limit_all_void():
+    """With talk_max_communiques_per_year=0, every communique is void."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=0)
+    game.process()  # open round 1
+
+    _, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Announcement')
+    assert status == 'void'
+    assert game.talk_communique_counts['FRANCE'] == 1
+
+
+def test_empty_message_body():
+    """An empty string message is valid (0 chars, under any positive limit)."""
+    game = _server_game_with_talk(talk_max_chars_per_message=500)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'ENGLAND', '')
+    assert status == 'valid'
+    assert held['message'] == ''
+
+
+def test_communique_exactly_at_char_limit():
+    """A communique exactly at the char limit is valid."""
+    game = _server_game_with_talk(talk_max_communique_chars=15)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'A' * 15)
+    assert status == 'valid'
+
+
+def test_communique_one_over_char_limit():
+    """A communique one char over the limit is void."""
+    game = _server_game_with_talk(talk_max_communique_chars=15)
+    game.process()  # open round 1
+
+    held, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'A' * 16)
+    assert status == 'void'
+
+
+# --- Independent per-power limits ---
+
+def test_independent_power_limits():
+    """Each power has its own message count limit."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    _, s1 = _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'fr-msg')
+    _, s2 = _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'en-msg')
+    _, s3 = _simulate_send_message(game, 'FRANCE', 'GERMANY', 'fr-over')
+
+    assert s1 == 'valid'
+    assert s2 == 'valid'
+    assert s3 == 'void'
+
+
+def test_independent_communique_limits():
+    """Each power has its own communique count limit."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=1)
+    game.process()  # open round 1
+
+    _, s1 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'fr communique')
+    _, s2 = _simulate_send_message(game, 'ENGLAND', 'GLOBAL', 'en communique')
+    _, s3 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'fr second')
+
+    assert s1 == 'valid'
+    assert s2 == 'valid'
+    assert s3 == 'void'
+
+
+# --- Void communiques still count ---
+
+def test_void_communique_still_counts_against_quota():
+    """A void communique (char limit) still increments the counter."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=2, talk_max_communique_chars=5)
+    game.process()  # open round 1
+
+    # First communique: too long -> void, but counts
+    _, s1 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Way too long')
+    assert s1 == 'void'
+    assert game.talk_communique_counts['FRANCE'] == 1
+
+    # Second communique: valid length
+    _, s2 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'OK')
+    assert s2 == 'valid'
+    assert game.talk_communique_counts['FRANCE'] == 2
+
+    # Third: over count limit
+    _, s3 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'No')
+    assert s3 == 'void'
+    assert 'limit exceeded' in game.talk_held_messages[-1]['void_reason']
+
+
+# --- Communique counts persist across rounds within a season ---
+
+def test_communique_counts_persist_across_rounds():
+    """Communique counts don't reset between rounds within the same Talk phase."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=1)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Used my communique')
+    assert game.talk_communique_counts['FRANCE'] == 1
+
+    game.process()  # close round 1, open round 2
+
+    # Count should persist (communique is per-year, not per-round)
+    assert game.talk_communique_counts['FRANCE'] == 1
+    _, s2 = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Try again')
+    assert s2 == 'void'
+
+
+def test_communique_counts_persist_into_fall():
+    """Communique counts from Spring persist into Fall Talk."""
+    game = _server_game_with_talk(talk_max_communiques_per_year=1)
+    game.process()  # Spring Talk, open round 1
+    _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Spring communique')
+
+    # Complete Spring Talk + Movement
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+    game.process()  # -> Fall Talk
+
+    assert game.phase_type == 'T'
+    assert game.current_short_phase.startswith('F')
+    game.process()  # open Fall round 1
+
+    # France already used their communique in Spring
+    _, status = _simulate_send_message(game, 'FRANCE', 'GLOBAL', 'Fall communique')
+    assert status == 'void'
+
+
+# --- Mixed delivery ---
+
+def test_mixed_valid_void_across_powers_on_delivery():
+    """Multiple powers with mix of valid/void — only valid delivered."""
+    game = _server_game_with_talk(talk_max_messages_per_round=1)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'fr-valid')
+    _simulate_send_message(game, 'FRANCE', 'GERMANY', 'fr-void')  # void
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'en-valid')
+    _simulate_send_message(game, 'ENGLAND', 'GERMANY', 'en-void')  # void
+
+    game.process()  # close round 1, open round 2
+
+    assert len(game.messages) == 2
+    bodies = {msg.message for msg in game.messages.values()}
+    assert bodies == {'fr-valid', 'en-valid'}
+
+
+def test_communique_and_private_delivered_together():
+    """Both private and communique messages delivered on same round close."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Private hello')
+    _simulate_send_message(game, 'GERMANY', 'GLOBAL', 'Public hello')
+
+    game.process()  # close round 1, open round 2
+
+    assert len(game.messages) == 2
+    recipients = {msg.recipient for msg in game.messages.values()}
+    assert 'ENGLAND' in recipients
+    assert 'GLOBAL' in recipients
+
+
+# --- Full cycle integration ---
+
+def test_full_talk_cycle_messages_in_both_rounds():
+    """Messages from both rounds are all in game.messages after orders_open."""
+    game = _server_game_with_talk()
+
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1 from France')
+
+    game.process()  # close round 1, open round 2
+    assert len(game.messages) == 1
+
+    _simulate_send_message(game, 'ENGLAND', 'FRANCE', 'R2 from England')
+
+    game.process()  # close round 2, orders_open
+    assert len(game.messages) == 2
+    senders = {msg.sender for msg in game.messages.values()}
+    assert senders == {'FRANCE', 'ENGLAND'}
+
+
+def test_full_cycle_messages_in_history_after_movement():
+    """After Talk→Movement, all Talk messages appear in message_history."""
+    game = _server_game_with_talk()
+    talk_phase = game.current_short_phase
+
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1 msg')
+    game.process()  # round 2
+    _simulate_send_message(game, 'GERMANY', 'ITALY', 'R2 msg')
+    game.process()  # orders_open
+    game.process()  # -> Movement
+
+    assert game.phase_type == 'M'
+    assert talk_phase in game.message_history
+    assert len(game.message_history[talk_phase]) == 2
+
+
+def test_no_messages_carried_from_talk_to_movement():
+    """game.messages is empty in Movement phase (messages archived to history)."""
+    game = _server_game_with_talk()
+
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Hello')
+    game.process()  # round 2
+    game.process()  # orders_open
+    game.process()  # -> Movement
+
+    assert game.phase_type == 'M'
+    assert len(game.messages) == 0
+
+
+# --- Serialization mid-cycle ---
+
+def test_full_state_serialization_mid_cycle():
+    """All talk state survives serialization mid-cycle."""
+    game = _server_game_with_talk(
+        talk_max_messages_per_round=3,
+        talk_max_chars_per_message=200,
+        talk_max_communiques_per_year=2,
+        talk_max_communique_chars=100,
+        talk_round_deadline=30,
+        talk_orders_deadline=60,
+    )
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Private')
+    _simulate_send_message(game, 'GERMANY', 'GLOBAL', 'Communique')
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+
+    assert restored.talk_round == 1
+    assert restored.talk_round_state == strings.ROUND_OPEN
+    assert restored.talk_max_messages_per_round == 3
+    assert restored.talk_max_chars_per_message == 200
+    assert restored.talk_max_communiques_per_year == 2
+    assert restored.talk_max_communique_chars == 100
+    assert restored.talk_round_deadline == 30
+    assert restored.talk_orders_deadline == 60
+    assert restored.talk_message_counts == {'FRANCE': 1}
+    assert restored.talk_communique_counts == {'GERMANY': 1}
+    assert len(restored.talk_held_messages) == 2
+
+
+def test_serialization_after_round_close_with_delivered():
+    """After round close, delivered messages are in game.messages and survive serialization."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Test message')
+
+    game.process()  # close round 1, open round 2
+
+    game_dict = game.to_dict()
+    restored = ServerGame.from_dict(game_dict)
+
+    assert len(restored.messages) == 1
+    assert list(restored.messages.values())[0].message == 'Test message'
+    # Held messages should be empty (round 1 cleared)
+    assert len(restored.talk_held_messages) == 0
+
+
+# --- talk_num_rounds=1 with messages ---
+
+def test_single_round_messages_delivered_at_orders_open():
+    """With talk_num_rounds=1, messages from round 1 delivered when transitioning to orders_open."""
+    game = _server_game_with_talk(talk_num_rounds=1)
+    game.process()  # open round 1
+    assert game.talk_round == 1
+    assert game.talk_round_state == strings.ROUND_OPEN
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Only round')
+
+    game.process()  # -> orders_open (round 1 closes since talk_num_rounds=1)
+    assert game.talk_round_state == strings.ORDERS_OPEN
+    assert len(game.messages) == 1
+    assert list(game.messages.values())[0].message == 'Only round'
+
+
+# --- Press log char_count accuracy ---
+
+def test_press_log_char_count_accuracy():
+    """Press log char_count matches actual message length."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    messages = ['Hi', 'A' * 100, '', 'Hello World!']
+    for body in messages:
+        _simulate_send_message(game, 'FRANCE', 'ENGLAND', body)
+
+    game.process()  # close round 1
+
+    assert len(game._last_press_log) == 4
+    for i, entry in enumerate(game._last_press_log):
+        assert entry['char_count'] == len(messages[i])
+
+
+# --- Press log void entries have correct char_count ---
+
+def test_press_log_void_entry_has_correct_char_count():
+    """Void messages in press log still record the attempted char_count."""
+    game = _server_game_with_talk(talk_max_chars_per_message=5)
+    game.process()  # open round 1
+
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Way too long message')
+
+    game.process()  # close round 1
+
+    assert len(game._last_press_log) == 1
+    entry = game._last_press_log[0]
+    assert entry['status'] == 'void'
+    assert entry['char_count'] == len('Way too long message')
+
+
+# --- Multi-year state reset ---
+
+def test_multi_year_clean_state():
+    """Talk state fully resets each Talk phase across multiple years."""
+    game = _server_game_with_talk()
+
+    for _ in range(2):
+        # Spring Talk
+        assert game.phase_type == 'T'
+        assert game.talk_round == 0
+        assert game.talk_round_state == ''
+        assert game.talk_held_messages == []
+        assert game.talk_message_counts == {}
+
+        game.process()  # round 1
+        _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'msg')
+        game.process()  # round 2
+        game.process()  # orders_open
+        game.process()  # -> Movement
+        game.process()  # -> Fall Talk
+
+        # Fall Talk
+        assert game.phase_type == 'T'
+        assert game.talk_round == 0
+        assert game.talk_round_state == ''
+        assert game.talk_held_messages == []
+        assert game.talk_message_counts == {}
+
+        game.process()  # round 1
+        game.process()  # round 2
+        game.process()  # orders_open
+        game.process()  # -> Movement
+        game.process()  # -> next Spring Talk
+
+
+# --- _generate_press_log isolation ---
+
+def test_generate_press_log_only_current_round():
+    """_generate_press_log only includes entries for the specified round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1 msg')
+
+    # Manually add a fake held message for round 99
+    game.talk_held_messages.append({
+        'sender': 'GERMANY', 'recipient': 'ITALY', 'phase': 'S1901T',
+        'message': 'fake', 'round': 99, 'status': 'valid',
+        'void_reason': '', 'type': 'private',
+    })
+
+    log = game._generate_press_log(1)
+    assert len(log) == 1
+    assert log[0]['sender'] == 'FRANCE'
+
+    log99 = game._generate_press_log(99)
+    assert len(log99) == 1
+    assert log99[0]['sender'] == 'GERMANY'
+
+
+# --- Blocked messages in round_closed state ---
+
+def test_message_blocked_during_round_closed():
+    """Messages cannot be sent when talk_round_state is round_closed."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    # Manually set to round_closed to test blocking
+    game.talk_round_state = strings.ROUND_CLOSED
+
+    try:
+        _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Should fail')
+        assert False, 'Should have raised'
+    except RuntimeError as e:
+        assert 'talk rounds' in str(e)
+
+
+# --- Transient slots not in model ---
+
+def test_transient_slots_not_serialized():
+    """_last_delivered_messages, _last_closed_round, _last_press_log are not in serialized dict."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'Test')
+    game.process()  # close round 1
+
+    game_dict = game.to_dict()
+    assert '_last_delivered_messages' not in game_dict
+    assert '_last_closed_round' not in game_dict
+    assert '_last_press_log' not in game_dict
+
+
+# --- Notification parse_dict round-trip ---
+
+def test_talk_round_update_parse_dict():
+    """TalkRoundUpdate survives full parse_dict round-trip."""
+    from diplomacy.communication import notifications as notifs
+    notif = notifs.TalkRoundUpdate(
+        token='tok', game_id='g1', game_role='FRANCE',
+        talk_round=2, talk_round_state='round_open', talk_num_rounds=3,
+    )
+    d = notif.to_dict()
+    restored = notifs.parse_dict(d)
+    assert isinstance(restored, notifs.TalkRoundUpdate)
+    assert restored.talk_round == 2
+    assert restored.talk_round_state == 'round_open'
+    assert restored.talk_num_rounds == 3
+
+
+def test_talk_press_log_parse_dict():
+    """TalkPressLog survives full parse_dict round-trip."""
+    from diplomacy.communication import notifications as notifs
+    entries = [{'sender': 'FRANCE', 'recipient': 'ENGLAND', 'char_count': 5, 'status': 'valid', 'type': 'private'}]
+    notif = notifs.TalkPressLog(
+        token='tok', game_id='g1', game_role='FRANCE',
+        talk_round=1, entries=entries,
+    )
+    d = notif.to_dict()
+    restored = notifs.parse_dict(d)
+    assert isinstance(restored, notifs.TalkPressLog)
+    assert restored.talk_round == 1
+    assert len(restored.entries) == 1
+    assert restored.entries[0]['sender'] == 'FRANCE'
+
+
+# --- Five powers all active in same round ---
+
+def test_five_powers_all_send_messages():
+    """Five different powers each send messages in the same round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+
+    powers = ['FRANCE', 'ENGLAND', 'GERMANY', 'ITALY', 'RUSSIA']
+    for i, power in enumerate(powers):
+        target = powers[(i + 1) % len(powers)]
+        _simulate_send_message(game, power, target, 'Hello from %s' % power)
+
+    assert len(game.talk_held_messages) == 5
+    for power in powers:
+        assert game.talk_message_counts[power] == 1
+
+    game.process()  # close round 1
+    assert len(game.messages) == 5
+    delivered_senders = {msg.sender for msg in game.messages.values()}
+    assert delivered_senders == set(powers)
+
+
+# --- Press log after full cycle with no held messages remaining ---
+
+def test_press_log_and_held_messages_clean_after_full_cycle():
+    """After all rounds close, no held messages remain, and press log reflects last round."""
+    game = _server_game_with_talk()
+    game.process()  # open round 1
+    _simulate_send_message(game, 'FRANCE', 'ENGLAND', 'R1')
+    game.process()  # close round 1, open round 2
+    _simulate_send_message(game, 'GERMANY', 'ITALY', 'R2')
+    game.process()  # close round 2, orders_open
+
+    # Held messages cleared
+    assert len(game.talk_held_messages) == 0
+    # Press log from round 2
+    assert len(game._last_press_log) == 1
+    assert game._last_press_log[0]['sender'] == 'GERMANY'

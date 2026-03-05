@@ -225,7 +225,9 @@ class Game(Jsonable):
                  'message_history', 'state_history', 'result_history', 'status', 'timestamp_created', 'n_controls',
                  'deadline', 'registration_password', 'observer_level', 'controlled_powers', '_phase_wrapper_type',
                  'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state',
-                 'talk_num_rounds']
+                 'talk_num_rounds', 'talk_max_messages_per_round', 'talk_max_chars_per_message',
+                 'talk_round_deadline', 'talk_orders_deadline',
+                 'talk_max_communiques_per_year', 'talk_max_communique_chars']
     zobrist_tables = {}
     rule_cache = ()
     model = {
@@ -257,7 +259,13 @@ class Game(Jsonable):
         strings.STATE_HISTORY: parsing.DefaultValueType(parsing.DictType(str, dict), {}),
         strings.STATUS: parsing.DefaultValueType(parsing.EnumerationType(strings.ALL_GAME_STATUSES), strings.FORMING),
         strings.TIMESTAMP_CREATED: parsing.OptionalValueType(int),
+        strings.TALK_MAX_CHARS_PER_MESSAGE: parsing.DefaultValueType(int, 500),
+        strings.TALK_MAX_COMMUNIQUE_CHARS: parsing.DefaultValueType(int, 500),
+        strings.TALK_MAX_COMMUNIQUES_PER_YEAR: parsing.DefaultValueType(int, 1),
+        strings.TALK_MAX_MESSAGES_PER_ROUND: parsing.DefaultValueType(int, 5),
         strings.TALK_NUM_ROUNDS: parsing.DefaultValueType(int, 2),
+        strings.TALK_ORDERS_DEADLINE: parsing.DefaultValueType(int, 0),
+        strings.TALK_ROUND_DEADLINE: parsing.DefaultValueType(int, 0),
         strings.VICTORY: parsing.DefaultValueType(parsing.SequenceType(int), []),
         strings.WIN: parsing.DefaultValueType(int, 0),
         strings.ZOBRIST_HASH: parsing.DefaultValueType(int, 0),
@@ -296,6 +304,12 @@ class Game(Jsonable):
         self.daide_port = None
         self.fixed_state = None
         self.talk_num_rounds = 2
+        self.talk_max_messages_per_round = 5
+        self.talk_max_chars_per_message = 500
+        self.talk_round_deadline = 0
+        self.talk_orders_deadline = 0
+        self.talk_max_communiques_per_year = 1
+        self.talk_max_communique_chars = 500
 
         # Caches
         self._unit_owner_cache = None               # {(unit, coast_required): owner}

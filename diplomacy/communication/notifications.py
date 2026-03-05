@@ -300,6 +300,48 @@ class PowerWaitFlag(_GameNotification):
         self.wait = None  # type: bool
         super(PowerWaitFlag, self).__init__(**kwargs)
 
+class TalkRoundUpdate(_GameNotification):
+    """ Notification about a talk round state change.
+
+        Properties:
+
+            - **talk_round**: :class:`int` current talk round number
+            - **talk_round_state**: :class:`str` current round state
+            - **talk_num_rounds**: :class:`int` total number of talk rounds
+    """
+    __slots__ = ['talk_round', 'talk_round_state', 'talk_num_rounds']
+    params = {
+        strings.TALK_ROUND: int,
+        strings.TALK_ROUND_STATE: str,
+        strings.TALK_NUM_ROUNDS: int,
+    }
+
+    def __init__(self, **kwargs):
+        self.talk_round = 0
+        self.talk_round_state = ''
+        self.talk_num_rounds = 0
+        super(TalkRoundUpdate, self).__init__(**kwargs)
+
+class TalkPressLog(_GameNotification):
+    """ Notification containing press log metadata after a talk round closes.
+
+        Properties:
+
+            - **talk_round**: :class:`int` the round number this press log is for
+            - **entries**: :class:`list` of dicts with metadata about each message
+              (sender, recipient, char_count, status, type — no message body)
+    """
+    __slots__ = ['talk_round', 'entries']
+    params = {
+        strings.TALK_ROUND: int,
+        'entries': parsing.SequenceType(dict),
+    }
+
+    def __init__(self, **kwargs):
+        self.talk_round = 0
+        self.entries = []
+        super(TalkPressLog, self).__init__(**kwargs)
+
 def parse_dict(json_notification):
     """ Parse a JSON expected to represent a notification. Raise an exception if parsing failed.
 

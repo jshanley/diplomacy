@@ -345,6 +345,29 @@ class Notifier:
                                                                      message=game_message))
 
     @gen.coroutine
+    def notify_talk_round_update(self, server_game):
+        """ Notify all game tokens about a talk round state change.
+
+            :param server_game: game to notify
+            :type server_game: diplomacy.server.server_game.ServerGame
+        """
+        yield self._notify_game(server_game, notifications.TalkRoundUpdate,
+                                talk_round=server_game.talk_round,
+                                talk_round_state=server_game.talk_round_state,
+                                talk_num_rounds=server_game.talk_num_rounds)
+
+    @gen.coroutine
+    def notify_talk_press_log(self, server_game):
+        """ Notify all game tokens about press log metadata after a round closes.
+
+            :param server_game: game to notify
+            :type server_game: diplomacy.server.server_game.ServerGame
+        """
+        yield self._notify_game(server_game, notifications.TalkPressLog,
+                                talk_round=server_game._last_closed_round,
+                                entries=server_game._last_press_log)
+
+    @gen.coroutine
     def notify_game_addresses(self, game_id, addresses, notification_class, **kwargs):
         """ Notify addresses of a game with a notification.
             Game ID is automatically provided to notification.
