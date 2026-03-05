@@ -73,7 +73,9 @@ game.get_units('FRANCE')              # ['A MAR']
 game.get_centers('FRANCE')            # ['PAR', 'MAR', 'BRE']
 ```
 
-**Phase cycle:** `SPRING M → SPRING R → FALL M → FALL R → WINTER A → repeat`
+**Phase cycle:** `SPRING T → SPRING M → SPRING R → FALL T → FALL M → FALL R → WINTER A → repeat`
+
+Talk (T) phases are skipped by default (`NO_TALK` rule). When enabled, each Talk phase runs a configurable number of negotiation rounds with batch message delivery before advancing to the Movement phase.
 
 ### Server (`diplomacy/server/`)
 
@@ -82,7 +84,7 @@ Tornado-based async server. Handles connections, auth, game lifecycle, notificat
 | File | Lines | Purpose |
 |------|-------|---------|
 | `server.py` | 1,005 | Main server. Startup, game management, backup. |
-| `server_game.py` | 726 | Game wrapper with role-based filtering and server hooks. |
+| `server_game.py` | 726 | Game wrapper with role-based filtering, Talk round state machine, batch delivery. |
 | `connection_handler.py` | 136 | WebSocket handler. JSON in, JSON out. |
 | `request_managers.py` | 1,268 | Routes requests to handlers. All game actions go through here. |
 | `notifier.py` | 760 | Broadcasts state changes to connected clients. |
@@ -121,7 +123,7 @@ Protocol definitions. Request/response/notification classes shared by client and
 
 - **Requests:** `SignIn`, `CreateGame`, `JoinGame`, `SetOrders`, `SendGameMessage`, etc.
 - **Responses:** `Ok`, `Error`, `DataGame`, `DataToken`, etc.
-- **Notifications:** `GamePhaseUpdate`, `GameProcessed`, `GameMessageReceived`, etc.
+- **Notifications:** `GamePhaseUpdate`, `GameProcessed`, `GameMessageReceived`, `TalkRoundUpdate`, `TalkPressLog`, etc.
 
 ### Web (`diplomacy/web/`)
 
@@ -163,14 +165,39 @@ All players ready (or deadline expires)
     → Scheduler sets next deadline
 ```
 
-### Message Relay
+### Message Relay (Standard)
 ```
-Player sends message
+Player sends message (non-Talk phase)
   → Client sends SendGameMessage request
     → server validates (sender controls power, game is active)
     → message stored in game state
     → Notifier sends GameMessageReceived to recipient(s)
-  → Press log metadata recorded
+```
+
+### Message Relay (Talk Phase — Batch Delivery)
+```
+Player sends message during Talk round_open
+  → Client sends SendGameMessage request
+    → request_managers intercepts (phase_type == 'T', round_open)
+    → validates: count limit, char limit, communique quota
+    → message held in talk_held_messages (not delivered)
+    → status: 'valid' or 'void' (void messages still count against quota)
+    → synthetic timestamp response returned to client
+
+All powers signal ready (or deadline expires)
+  → Scheduler triggers processing
+    → _close_talk_round():
+      → _generate_press_log() captures metadata (sender, recipient, char_count, status, type)
+      → valid messages: create Message objects, add to game.messages with server timestamps
+      → void messages: discarded
+      → talk_held_messages cleared for this round
+    → _process_game() dispatches:
+      → TalkPressLog notification (metadata only, no message bodies)
+      → GameMessageReceived for each delivered message
+      → TalkRoundUpdate notification (new round state)
+    → If more rounds remain: open next round
+    → If final round done: transition to orders_open
+    → If orders_open done: advance to Movement phase
 ```
 
 ## What Exists vs. What We Need to Build
@@ -186,9 +213,20 @@ Player sends message
 - Per-player game logging
 - React web UI with interactive map
 
+### Recently Built (Track A — `feature/talk-phase-engine`)
+- **Talk phase engine** — `'T'` phase type in map sequence, `NO_TALK` rule for backward compatibility
+- **Negotiation round state machine** — Configurable multi-round Talk phases with ready signaling
+- **Batch message collection & delivery** — Messages held during rounds, delivered simultaneously on close
+- **Message limits** — Per-round count limits, character limits, void tracking
+- **Public communiques** — Per-year quota, separate from private messages, delivered as GLOBAL
+- **Press log** — Metadata-only broadcast after each round (sender, recipient, char_count, status, type)
+- **Timer/deadline integration** — Round-specific deadlines with auto-advance
+- **Client notifications** — `TalkRoundUpdate` and `TalkPressLog` (Python + JS)
+
 ### Needs to Be Built
 - **Agent runner** — Takes agent definition + API key, connects to server, feeds game state to LLM, submits orders and messages
-- **Press engine** — Batch delivery (Round A/B), message limits, character counting, public communiques, press logs
+- **Dumb bot agent** — Random legal orders, proves agent pipeline end-to-end
+- **Agent-vs-agent harness** — 7 bots, full game to completion, Mode 3 primitive
 - **Game mode configuration** — Three modes with smart defaults, admin setup flow
 - **Admin portal** — Game creation wizard with full specification options
 - **Player portal** — In-game UI for humans (order submission, negotiation, map view)

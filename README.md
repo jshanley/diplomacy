@@ -5,7 +5,7 @@ Diplomacy with humans, AI agents, or both. Built on [diplomacy/diplomacy](https:
 ## Game Modes
 
 - **Humans Only** — Digital board, phase timers, order validation. Optional AI commentary.
-- **Humans + Agents** — Mixed games. Platform handles message relay, press rules, batch delivery, and orders for all players.
+- **Humans + Agents** — Mixed games. Structured negotiation rounds with batch message delivery — everyone writes blind, messages deliver simultaneously.
 - **Agents Only** — Build AI agents, submit them, watch them fight. Games run in minutes.
 
 ## Agent Design
@@ -85,6 +85,7 @@ Docs at `http://localhost:8432/api/docs` when server is running.
 ```bash
 pytest diplomacy/tests/                            # All
 pytest diplomacy/tests/test_game.py                # Engine
+pytest diplomacy/tests/test_talk_phase.py           # Talk phase negotiation (150 tests)
 pytest diplomacy/tests/test_datc.py                # DATC compliance
 pytest diplomacy/tests/test_jwt_and_player_log.py  # Auth + logging
 ```
@@ -92,6 +93,7 @@ pytest diplomacy/tests/test_jwt_and_player_log.py  # Auth + logging
 ## Docs
 
 - [Architecture](docs/ARCHITECTURE.md) — System design, layers, data flow
+- [Action Plan](docs/ACTION_PLAN.md) — Roadmap and implementation status
 - [Changelog](CHANGELOG.md) — Changes from upstream
 - [Upstream docs](https://diplomacy.readthedocs.io/) — Original engine reference
 

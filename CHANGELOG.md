@@ -4,9 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [Unreleased] — Talk Phase Negotiation Engine (Track A)
 
-_Nothing yet._
+Branch: `feature/talk-phase-engine`
+
+### Added
+- **Talk phase type** — New `'T'` (Talk) phase in `Map.seq` creating a `T-M-R-A-T` cycle. `NO_TALK` rule (default on) skips Talk phases for backward compatibility. (`8a4a058`)
+- **Server round state machine** — Configurable multi-round Talk phases (`talk_num_rounds`, default 2). Round state machine: `round_open(1..N) → orders_open → phase advance`. Ready signaling via `SetWaitFlag`. (`994f8a5`)
+- **Batch message collection** — Messages submitted during `round_open` are held in `talk_held_messages`, not delivered immediately. Per-round count limits (`talk_max_messages_per_round`) and character limits (`talk_max_chars_per_message`). Void messages still count against quota. (`da2f1d6`)
+- **Batch delivery** — Valid held messages delivered simultaneously when a round closes via `_close_talk_round()`. Void messages discarded. Server timestamps generated at delivery time. (`da2f1d6`)
+- **TalkRoundUpdate notification** — New `TalkRoundUpdate` notification class broadcasts round number, state, and total rounds to all game tokens. Python + JS client handlers added. (`da2f1d6`)
+- **Timer/deadline integration** — `talk_round_deadline` and `talk_orders_deadline` config fields (default 0 = no auto-advance). Server scheduler reschedules with talk-specific deadlines when configured. (`da2f1d6`)
+- **Public communique support** — Per-year communique quota (`talk_max_communiques_per_year`, default 1) separate from private message limits. Delivered as `GLOBAL` recipient messages. Counts reset at Spring Talk round 1. (`da2f1d6`)
+- **Press log** — `TalkPressLog` notification broadcasts metadata (sender, recipient, char_count, status, type) after each round closes. No message body revealed. Python + JS client handlers added. (`da2f1d6`)
+- **191 Talk phase tests** — Comprehensive coverage across all 8 steps: phase sequences, state machine, batch collection/delivery, notifications, timers, communiques, press log, boundary conditions, serialization, multi-year cycles.
 
 ## Fork from diplomacy/diplomacy — 2026-02-23 / 2026-02-24
 
