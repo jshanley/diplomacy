@@ -55,3 +55,18 @@ class BaseAgent(metaclass=ABCMeta):
 
     def on_phase_end(self, game, power_name):
         """Optional hook called after each phase resolves. Override if needed."""
+
+    def generate_messages(self, game, power_name):
+        """Optional: generate diplomatic messages for Talk phases.
+
+        Override to send messages during negotiation rounds. The default
+        implementation sends no messages.
+
+        :param game: Current game state.
+        :param power_name: The power this agent is playing.
+        :type game: diplomacy.engine.game.Game
+        :type power_name: str
+        :return: A list of (recipient, body) tuples.
+        :rtype: list[tuple[str, str]]
+        """
+        return []

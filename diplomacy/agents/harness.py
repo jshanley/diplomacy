@@ -139,7 +139,8 @@ def run_local_game(agents, max_phases=1000, map_name='standard'):
 # Network game harness (proves pipeline with server)
 # ---------------------------------------------------------------------------
 
-def run_network_game(agents, port=None, max_phases=1000, map_name='standard'):
+def run_network_game(agents, port=None, max_phases=1000, map_name='standard',
+                     enable_talk=False, talk_num_rounds=2):
     """Run a full game over the network with server in the same process.
 
     Spins up a Server, creates a game, connects 7 bot clients, and runs
@@ -149,6 +150,8 @@ def run_network_game(agents, port=None, max_phases=1000, map_name='standard'):
     :param port: Port for the server (random if None).
     :param max_phases: Safety limit.
     :param map_name: Map name.
+    :param enable_talk: If True, enable Talk phases for negotiation.
+    :param talk_num_rounds: Number of talk rounds per Talk phase (when enabled).
     :return: A GameResult.
     :rtype: GameResult
     """
@@ -172,9 +175,14 @@ def run_network_game(agents, port=None, max_phases=1000, map_name='standard'):
         # Connect as admin, create game.
         connection = yield connect('localhost', port)
         admin_channel = yield connection.authenticate('admin', 'password')
-        rules = ['NO_PRESS', 'NO_TALK', 'IGNORE_ERRORS', 'POWER_CHOICE', 'REAL_TIME']
-        admin_game = yield admin_channel.create_game(
-            map_name=map_name, rules=rules, deadline=0)
+        rules = ['IGNORE_ERRORS', 'POWER_CHOICE', 'REAL_TIME']
+        if not enable_talk:
+            rules.extend(['NO_PRESS', 'NO_TALK'])
+        create_kwargs = dict(map_name=map_name, rules=rules, deadline=0)
+        if enable_talk:
+            create_kwargs['n_controls'] = len(power_names)
+            create_kwargs['talk_num_rounds'] = talk_num_rounds
+        admin_game = yield admin_channel.create_game(**create_kwargs)
         game_id = admin_game.game_id
 
         all_done = Future()
@@ -198,12 +206,40 @@ def run_network_game(agents, port=None, max_phases=1000, map_name='standard'):
                             all_done.set_result(None)
                         return
                     agent.on_phase_end(network_game, pn)
-                    orders = agent.generate_orders(network_game, pn)
-                    yield network_game.set_orders(orders=orders)
+                    # If the new phase is a Talk phase, the talk_round_update
+                    # callback handles messaging; we still submit orders for
+                    # non-Talk phases.
+                    phase = network_game.get_current_phase()
+                    if not phase or phase == 'COMPLETED':
+                        return
+                    phase_type = phase[-1] if len(phase) > 1 else ''
+                    if phase_type != 'T':
+                        orders = agent.generate_orders(network_game, pn)
+                        yield network_game.set_orders(orders=orders)
                 return _on_game_processed
 
             user_game.add_on_game_processed(
                 _make_callback(power_name, agent_map[power_name]))
+
+            # Register Talk round callback if talk is enabled.
+            if enable_talk:
+                def _make_talk_callback(pn, agent):
+                    @gen.coroutine
+                    def _on_talk_round_update(network_game, notification=None):
+                        if not notification:
+                            return
+                        if notification.talk_round_state != 'ROUND_OPEN':
+                            return
+                        messages = agent.generate_messages(network_game, pn)
+                        for recipient, body in messages:
+                            msg = network_game.new_power_message(recipient, body)
+                            yield network_game.send_game_message(message=msg)
+                        # Signal ready for this round.
+                        yield network_game.no_wait()
+                    return _on_talk_round_update
+
+                user_game.add_on_talk_round_update(
+                    _make_talk_callback(power_name, agent_map[power_name]))
 
         # Notify agents and submit initial orders.
         for power_name in power_names:
