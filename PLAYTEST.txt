@@ -1,0 +1,529 @@
+==============================================================================
+  DIPLOMACY -- PLAYTEST CHECKLIST
+==============================================================================
+
+  This document walks through the full game flow step by step. Follow each
+  test in order. Each step lists what to do and what you should see.
+
+  The game uses a Jackbox-style lobby: one person creates a game, shares a
+  4-character code, others join, and the host starts when ready. Negotiation
+  happens in Talk phases where messages are written privately and delivered
+  simultaneously after everyone clicks "DONE TALKING." Military orders are
+  submitted and then the host clicks PROCESS to advance the game.
+
+
+==============================================================================
+  SETUP
+==============================================================================
+
+  1. Open a terminal and navigate to the project directory:
+
+       cd /Users/phillipmcknight/Desktop/dipl.project-full/diplomacy
+
+  2. Start the server:
+
+       python -m diplomacy.server.run
+
+     If you need a specific port (default is 8432):
+
+       python -m diplomacy.server.run --port=8432
+
+  3. EXPECTED: Terminal prints startup messages. The server is now listening.
+
+  4. Open a browser and go to:
+
+       http://localhost:8432/app
+
+  5. EXPECTED: The Diplomacy web app loads. You see the lobby/home screen
+     where you can enter your name, create a game, or join a game.
+
+  6. IMPORTANT: If you previously ran the server and are getting odd behavior,
+     open the browser console (F12) and run:
+
+       localStorage.removeItem('diplomacy_identity')
+
+     Then refresh the page. This clears stale identity tokens.
+
+
+==============================================================================
+  TEST 1: GAME CREATION (Negotiation ON)
+==============================================================================
+
+  Goal: Create a game with the default settings (negotiation enabled,
+        2 talk rounds per phase, standard map).
+
+  STEPS:
+
+  1. On the home screen, enter a display name (e.g., "Phillip").
+
+  2. Click "CREATE GAME" (or the equivalent button).
+     - Leave negotiation ON (this is the default).
+     - Leave the map as "standard" and talk rounds as 2.
+
+  3. EXPECTED:
+     - A 4-character lobby code appears on screen (e.g., "H7KR").
+       The code uses only unambiguous characters (no 0/O, 1/I/L).
+     - You are listed in the player list as the host.
+     - The player count shows 1/7 (standard map has 7 powers).
+     - The lobby status is "waiting."
+
+  4. Note the lobby code -- you will need it for Test 2 and Test 8.
+
+  PASS CRITERIA:
+  [  ] Lobby code is displayed (4 characters, uppercase letters/digits)
+  [  ] Host player appears in the player list
+  [  ] Player count shows 1/7
+  [  ] Lobby status is "waiting"
+
+
+==============================================================================
+  TEST 2: ADDING AI PLAYERS
+==============================================================================
+
+  Goal: Fill the remaining 6 slots with AI bots.
+
+  STEPS:
+
+  1. In the lobby screen, click "+ ADD AI PLAYERS" (or the equivalent button).
+
+  2. A dialog or form appears. Fill it in:
+     - Count: 6 (to fill all remaining slots)
+     - Provider: choose one of "anthropic", "openai", or "google"
+     - API Key: paste a valid API key for the selected provider
+     - Model: leave as default or specify one
+       (default for Anthropic is claude-sonnet-4-20250514)
+
+  3. Click "Add" or "Confirm."
+
+  4. EXPECTED:
+     - 6 AI players appear in the player list.
+     - Their names follow the pattern: AI Alpha, AI Beta, AI Gamma,
+       AI Delta, AI Epsilon, AI Zeta.
+     - Each bot has an [AI] badge or indicator next to its name.
+     - The player count now shows 7/7.
+
+  5. CHECK THE TERMINAL: You should see log lines like:
+       Bot added: code=XXXX name=AI Alpha (2/7)
+       Bot added: code=XXXX name=AI Beta (3/7)
+       ... and so on up to (7/7).
+
+  PASS CRITERIA:
+  [  ] 6 bots appear in the player list
+  [  ] Bots are labeled with [AI] badges
+  [  ] Bot names are AI Alpha through AI Zeta
+  [  ] Player count shows 7/7
+  [  ] Terminal logs confirm bots were added
+
+
+==============================================================================
+  TEST 3: STARTING THE GAME
+==============================================================================
+
+  Goal: Host starts the game. Powers are randomly assigned. The game enters
+        the first Talk phase.
+
+  STEPS:
+
+  1. Click "START GAME."
+
+  2. EXPECTED (on screen):
+     - The lobby transitions from the waiting screen to the game screen.
+     - You are assigned a random power (e.g., FRANCE, ENGLAND, etc.).
+     - The phase indicator shows something like "S1901M" (Spring 1901
+       Movement) but the game is in Talk mode first.
+     - The Talk phase UI appears:
+         * Header shows "TALK ROUND 1/2" and state "OPEN"
+         * Ready status dots (or indicators) for all 7 powers
+         * A message composition area with recipient dropdown and text field
+
+  3. EXPECTED (in terminal):
+     - "Game created" and "Game started" log lines.
+     - "Player X joined as FRANCE" (etc.) for all 7 players.
+     - "Talk round opened: round=1 state=round_open"
+     - "Bot runner started: AI Alpha as AUSTRIA" (etc.) for each bot.
+
+  PASS CRITERIA:
+  [  ] Game screen loads (no longer showing lobby)
+  [  ] Your assigned power is displayed
+  [  ] Talk phase UI is visible: "TALK ROUND 1/2, OPEN"
+  [  ] Ready indicators shown for all 7 powers
+  [  ] Terminal shows game creation and bot runner startup logs
+
+
+==============================================================================
+  TEST 4: TALK ROUND 1
+==============================================================================
+
+  Goal: Send messages during the first talk round, signal ready, and wait
+        for bots to complete their messages and signal ready.
+
+  STEPS:
+
+  1. In the Talk phase UI, select a recipient from the dropdown.
+     - Recipients are the other 6 powers (e.g., ENGLAND, FRANCE, ...).
+     - There may also be a "GLOBAL" option for broadcast messages.
+     - You cannot send a message to yourself.
+
+  2. Type a message in the text field and click "Send."
+
+  3. EXPECTED:
+     - The message counter increments (e.g., "1/5").
+     - The maximum is 5 messages per round (talk_max_messages_per_round=5).
+     - Your sent message appears in a sent-messages list or log.
+
+  4. Send additional messages (up to 5 total) to different recipients or
+     the same one.
+
+  5. EXPECTED: Counter reaches your sent count out of 5 (e.g., "3/5").
+
+  6. Click "DONE TALKING" (or the equivalent ready button).
+
+  7. EXPECTED:
+     - Your ready indicator lights up or changes state.
+     - A "WAITING FOR OTHERS..." message appears.
+     - You can no longer send messages for this round.
+
+  8. Wait for all bots to finish their talk round.
+
+  9. EXPECTED (in terminal):
+     - For each bot, you see lines like:
+         Bot AI Alpha (AUSTRIA): generating messages for round 1
+     - Then, after messages are sent:
+         Talk ready: [power] added
+     - This repeats for all 6 bots.
+
+  10. Once all 7 powers (you + 6 bots) are ready, the round advances.
+
+  11. EXPECTED:
+      - The UI transitions to "TALK ROUND 2/2" with state "OPEN."
+      - Messages from round 1 are NOT visible yet (they are held/batched
+        and delivered when the round closes).
+
+  PASS CRITERIA:
+  [  ] Can select a recipient from dropdown
+  [  ] Can type and send a message
+  [  ] Message counter increments (X/5)
+  [  ] "DONE TALKING" button works; shows "WAITING FOR OTHERS..."
+  [  ] Terminal shows bots generating messages and signaling ready
+  [  ] Round advances to TALK ROUND 2/2 after all powers are ready
+
+
+==============================================================================
+  TEST 5: TALK ROUND 2
+==============================================================================
+
+  Goal: Complete the second (final) talk round. After this, the game
+        transitions to the order submission phase.
+
+  STEPS:
+
+  1. Repeat the same process as Test 4:
+     - Select recipients, type and send messages (up to 5).
+     - Click "DONE TALKING."
+     - Wait for bots to finish.
+
+  2. EXPECTED (after all powers are ready for round 2):
+     - The Talk phase ends.
+     - The game transitions to the "SUBMIT ORDERS" state.
+       (The talk_round_state changes to "orders_open".)
+     - The UI now shows an order-building interface instead of the
+       message-sending interface.
+     - Delivered messages from both talk rounds should now appear in
+       the message thread/history panel. You can read what other powers
+       sent to you.
+
+  3. CHECK THE TERMINAL:
+     - You should see round 2 close and orders_open state begin.
+
+  PASS CRITERIA:
+  [  ] Talk round 2 follows the same flow as round 1
+  [  ] After round 2 completes, UI shows "SUBMIT ORDERS" state
+  [  ] Delivered messages from both rounds are now visible
+  [  ] Terminal confirms round closure and orders_open transition
+
+
+==============================================================================
+  TEST 6: ORDER SUBMISSION
+==============================================================================
+
+  Goal: Submit military orders for your units, then have the host process
+        the phase to advance the game.
+
+  STEPS:
+
+  1. In the order submission UI, you should see your units listed with
+     their current locations (e.g., "A PAR", "A MAR", "F BRE" for France).
+
+  2. Build orders for each unit. Available order types:
+     - Hold:          A PAR H
+     - Move:          A PAR - BUR
+     - Support hold:  A PAR S A MAR
+     - Support move:  A PAR S A MAR - BUR
+     - Convoy:        F NTH C A LON - NWY
+
+  3. The UI should show possible orders for each unit location. Select
+     or type orders for all your units.
+
+  4. Click "SUBMIT & READY" (or "Submit Orders").
+     - This submits orders with wait=false, meaning you are ready to
+       process immediately.
+
+  5. EXPECTED:
+     - Your orders are confirmed as submitted.
+     - Your power's order_is_set flag becomes true.
+
+  6. EXPECTED (bots):
+     - In the terminal, you see each bot generating and submitting orders:
+         Bot AI Alpha (AUSTRIA): generating orders for S1901M
+     - Bots submit with wait=false (auto-ready).
+
+  7. Once all powers have submitted (or the host is ready), click "PROCESS"
+     to advance the phase.
+
+  8. EXPECTED:
+     - The phase processes. Units move, supports execute, convoys resolve.
+     - The game advances to the next season (e.g., F1901M -- Fall 1901
+       Movement).
+     - If negotiation is enabled, the game enters another Talk phase
+       for the new season.
+     - The map updates to show new unit positions.
+
+  9. CHECK THE TERMINAL:
+     - Process logs showing the phase transition.
+     - "previous_phase" and "new_phase" values.
+
+  PASS CRITERIA:
+  [  ] Can see your units and their orderable locations
+  [  ] Can build and submit orders for each unit
+  [  ] "SUBMIT & READY" confirms submission
+  [  ] Bots submit their orders (check terminal)
+  [  ] "PROCESS" advances the game to the next phase
+  [  ] Map updates with new unit positions
+  [  ] If negotiation is on, new Talk phase begins for the next season
+
+
+==============================================================================
+  TEST 7: GAME WITHOUT NEGOTIATION
+==============================================================================
+
+  Goal: Verify that disabling negotiation skips Talk phases entirely.
+
+  STEPS:
+
+  1. Go back to the home screen (or open a new tab to http://localhost:8432/app).
+     Clear identity if needed: localStorage.removeItem('diplomacy_identity')
+
+  2. Enter a display name and click "CREATE GAME."
+
+  3. This time, toggle negotiation OFF before creating.
+     - This sets enable_talk=false.
+     - The engine game will be created with rules: POWER_CHOICE, NO_TALK,
+       NO_PRESS.
+
+  4. Add 6 AI bots (same as Test 2).
+
+  5. Click "START GAME."
+
+  6. EXPECTED:
+     - The game starts and goes directly to the Movement order phase.
+     - There is NO Talk phase UI.
+     - No "TALK ROUND" header or message composition area.
+     - You see the order submission interface immediately.
+
+  7. Submit orders and process the phase as in Test 6.
+
+  8. EXPECTED:
+     - The game continues to cycle through Movement/Retreat/Adjustment
+       phases without any Talk rounds.
+
+  PASS CRITERIA:
+  [  ] Game starts without a Talk phase
+  [  ] Order submission UI appears immediately
+  [  ] No message/negotiation interface is shown
+  [  ] Game processes phases normally without Talk rounds
+
+
+==============================================================================
+  TEST 8: MULTI-PLAYER (Optional)
+==============================================================================
+
+  Goal: Verify that a second human player can join and play alongside you.
+
+  STEPS:
+
+  1. Create a game as in Test 1 (negotiation ON). Note the 4-character code.
+
+  2. Open a second browser window or an incognito/private window.
+     Go to http://localhost:8432/app.
+
+  3. In the second window, enter a DIFFERENT display name (e.g., "Player2").
+
+  4. Click "JOIN GAME" and enter the 4-character lobby code.
+
+  5. EXPECTED:
+     - The second player joins the lobby.
+     - Both windows show 2/7 players in the player list.
+     - The second player is NOT the host (no host badge).
+     - The terminal shows: "Player joined: code=XXXX name=Player2 (2/7)"
+
+  6. Add 5 bots from the HOST window (not the second player's window,
+     since only the host can add bots).
+
+  7. EXPECTED: Both windows show 7/7 players.
+
+  8. Click "START GAME" from the HOST window.
+
+  9. EXPECTED:
+     - Both windows transition to the game screen.
+     - Each player is assigned a different power.
+     - Both see the Talk phase UI.
+
+  10. Play through a Talk round:
+      - In window 1, send a message to the power controlled by window 2.
+      - In window 2, send a message to the power controlled by window 1.
+      - Both click "DONE TALKING."
+      - Wait for bots.
+
+  11. EXPECTED:
+      - After the round closes, each player sees the messages sent to them
+        by the other human player (and by bots).
+
+  PASS CRITERIA:
+  [  ] Second player can join via lobby code
+  [  ] Both players appear in the lobby player list
+  [  ] Only the host can add bots and start the game
+  [  ] Both players see the game after starting
+  [  ] Each player is assigned a different power
+  [  ] Messages between human players are delivered after the round closes
+
+
+==============================================================================
+  KNOWN ISSUES AND THINGS TO WATCH
+==============================================================================
+
+  INVALID API KEY
+    If the API key is wrong or expired, bots will fail to generate messages
+    and orders. The terminal will show warnings like:
+      Bot AI Alpha: message generation failed: [error details]
+    However, bots should still signal ready with empty messages/orders, so
+    the game should not get permanently stuck. The bots will just do nothing.
+
+  GAME STUCK AT "WAITING FOR OTHERS..."
+    If the game seems stuck and no progress is happening:
+    - Check the terminal for error messages.
+    - Look for "failed to signal ready" or "failed to submit orders" errors.
+    - Bots poll every 1.5 seconds (BOT_POLL_INTERVAL). Give them time,
+      especially if LLM API calls are slow.
+    - If bots are truly stuck, the host can click "PROCESS" to force-advance
+      the phase.
+
+  MESSAGES ARE BATCHED
+    Messages are not delivered in real time. You will NOT see messages from
+    other players until the talk round closes (all players signal ready).
+    This is by design -- it simulates simultaneous communication, not a
+    live chat.
+
+  AFTER SERVER RESTART
+    The server does not persist game state across restarts. If you restart
+    the server, all games are lost. Also clear your browser's stored
+    identity token:
+      localStorage.removeItem('diplomacy_identity')
+    Then refresh the page before creating or joining a new game.
+
+  DUPLICATE DISPLAY NAMES
+    Two players cannot have the same display name in one lobby. If someone
+    tries to join with a name already taken, they get an error:
+      'Name "X" is already taken'
+
+  LOBBY CODE FORMAT
+    Codes are 4 characters from: A-H, J-N, P-Z, 2-9. The letters O, I, L
+    and the digits 0, 1 are excluded to avoid confusion.
+
+  MAXIMUM MESSAGES PER ROUND
+    Each player can send up to 5 messages per talk round. After 5, the
+    send button should be disabled or the server returns an error.
+
+  BOT PERSONALITIES
+    Each bot has a personality based on its assigned power:
+      AUSTRIA  - cautious and diplomatic
+      ENGLAND  - island power, controls seas
+      FRANCE   - versatile, balances aggression and diplomacy
+      GERMANY  - centrally located, alliance-dependent
+      ITALY    - opportunistic
+      RUSSIA   - large but spread thin
+      TURKEY   - corner position, methodical expansion
+
+  SUPPORTED LLM PROVIDERS
+    - anthropic (default) -- uses Anthropic API
+    - openai -- uses OpenAI API
+    - google -- uses Google AI API
+
+
+==============================================================================
+  API REFERENCE (for manual debugging)
+==============================================================================
+
+  If you need to inspect or poke the game state manually via curl:
+
+  Get identity token:
+    curl -X POST http://localhost:8432/api/auth/identity \
+      -H "Content-Type: application/json" \
+      -d '{"display_name": "TestUser"}'
+
+  Create a lobby:
+    curl -X POST http://localhost:8432/api/lobby/create \
+      -H "Authorization: Bearer <token>" \
+      -H "Content-Type: application/json" \
+      -d '{"display_name": "TestUser", "enable_talk": true, "talk_rounds": 2}'
+
+  Check lobby state:
+    curl http://localhost:8432/api/lobby/XXXX
+
+  Check game state:
+    curl -H "Authorization: Bearer <token>" \
+      http://localhost:8432/api/lobby/XXXX/game
+
+  Send a message:
+    curl -X POST http://localhost:8432/api/lobby/XXXX/messages \
+      -H "Authorization: Bearer <token>" \
+      -H "Content-Type: application/json" \
+      -d '{"recipient": "ENGLAND", "message": "Shall we ally?"}'
+
+  Signal ready:
+    curl -X POST http://localhost:8432/api/lobby/XXXX/ready \
+      -H "Authorization: Bearer <token>"
+
+  Submit orders:
+    curl -X POST http://localhost:8432/api/lobby/XXXX/orders \
+      -H "Authorization: Bearer <token>" \
+      -H "Content-Type: application/json" \
+      -d '{"orders": ["A PAR - BUR", "A MAR - SPA", "F BRE - MAO"], "wait": false}'
+
+  Force-process (host only):
+    curl -X POST http://localhost:8432/api/lobby/XXXX/process \
+      -H "Authorization: Bearer <token>"
+
+  Full API docs:
+    curl http://localhost:8432/api/docs
+
+
+==============================================================================
+  SUMMARY SCORECARD
+==============================================================================
+
+  Test 1: Game Creation                  [  ] PASS  [  ] FAIL
+  Test 2: Adding AI Players              [  ] PASS  [  ] FAIL
+  Test 3: Starting the Game              [  ] PASS  [  ] FAIL
+  Test 4: Talk Round 1                   [  ] PASS  [  ] FAIL
+  Test 5: Talk Round 2                   [  ] PASS  [  ] FAIL
+  Test 6: Order Submission               [  ] PASS  [  ] FAIL
+  Test 7: Game Without Negotiation       [  ] PASS  [  ] FAIL
+  Test 8: Multi-Player (Optional)        [  ] PASS  [  ] FAIL
+
+  Tester: ____________________    Date: ___________
+
+  Notes:
+  ______________________________________________________________________
+  ______________________________________________________________________
+  ______________________________________________________________________
+  ______________________________________________________________________

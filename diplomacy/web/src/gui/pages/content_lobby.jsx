@@ -125,6 +125,25 @@ export class ContentLobby extends React.Component {
             submitted: false,
             processing: false,
             showAbbreviations: true,
+            // Talk phase state
+            talkRound: 0,
+            talkRoundState: '',
+            talkNumRounds: 2,
+            talkMaxMessages: 5,
+            talkReadyPowers: [],
+            messages: [],
+            draftRecipient: '',
+            draftMessage: '',
+            sendingMessage: false,
+            messagesSentThisRound: 0,
+            readySent: false,
+            // Bot UI state
+            showBotForm: false,
+            botCount: 6,
+            botApiKey: '',
+            botModel: '',
+            botProvider: 'anthropic',
+            addingBots: false,
         };
         this.pollTimer = null;
         this.onStart = this.onStart.bind(this);
@@ -135,6 +154,9 @@ export class ContentLobby extends React.Component {
         this.onSelectLocation = this.onSelectLocation.bind(this);
         this.onSelectVia = this.onSelectVia.bind(this);
         this.onCopyAgentInstructions = this.onCopyAgentInstructions.bind(this);
+        this.onSendMessage = this.onSendMessage.bind(this);
+        this.onReady = this.onReady.bind(this);
+        this.onAddBots = this.onAddBots.bind(this);
     }
 
     componentDidMount() {
@@ -204,13 +226,29 @@ export class ContentLobby extends React.Component {
                 api.lobbyGetOrders(this.state.lobby.code),
             ]);
             this.setState(prev => {
-                const newState = { gameState: gs, ordersData: ord };
+                const newState = {
+                    gameState: gs,
+                    ordersData: ord,
+                    talkRound: gs.talk_round || 0,
+                    talkRoundState: gs.talk_round_state || '',
+                    talkNumRounds: gs.talk_num_rounds || 2,
+                    talkMaxMessages: gs.talk_max_messages || 5,
+                    talkReadyPowers: gs.talk_ready_powers || [],
+                    messages: gs.messages || [],
+                };
                 // Reset order state if phase changed
                 if (prev.gameState && prev.gameState.phase !== gs.phase) {
                     newState.builtOrders = {};
                     newState.submitted = false;
                     newState.orderBuildingType = null;
                     newState.orderBuildingPath = [];
+                    newState.readySent = false;
+                }
+                // Reset readySent and message counter if talk round changed
+                if (prev.talkRound !== newState.talkRound ||
+                    prev.talkRoundState !== newState.talkRoundState) {
+                    newState.readySent = false;
+                    newState.messagesSentThisRound = 0;
                 }
                 return newState;
             });
@@ -338,9 +376,60 @@ export class ContentLobby extends React.Component {
         }
     }
 
+    async onSendMessage(e) {
+        e.preventDefault();
+        const { draftRecipient, draftMessage } = this.state;
+        if (!draftRecipient || !draftMessage.trim()) return;
+
+        this.setState({ sendingMessage: true });
+        try {
+            await api.lobbySendMessage(
+                this.state.lobby.code, draftRecipient, draftMessage.trim()
+            );
+            this.setState(prev => ({
+                sendingMessage: false,
+                draftMessage: '',
+                messagesSentThisRound: prev.messagesSentThisRound + 1,
+            }));
+        } catch (err) {
+            this.showError(err);
+            this.setState({ sendingMessage: false });
+        }
+    }
+
+    async onReady() {
+        this.setState({ readySent: true });
+        try {
+            await api.lobbyReady(this.state.lobby.code);
+        } catch (err) {
+            this.showError(err);
+            this.setState({ readySent: false });
+        }
+    }
+
+    async onAddBots(e) {
+        e.preventDefault();
+        const { botCount, botApiKey, botModel, botProvider } = this.state;
+        if (!botApiKey.trim()) return this.showError('Enter an API key');
+
+        this.setState({ addingBots: true });
+        try {
+            const data = await api.lobbyAddBots(
+                this.state.lobby.code, botCount,
+                botApiKey.trim(), botModel.trim() || null, botProvider
+            );
+            this.setState({ addingBots: false, showBotForm: false, lobby: data.lobby });
+        } catch (err) {
+            this.showError(err);
+            this.setState({ addingBots: false });
+        }
+    }
+
     renderWaiting() {
-        const { lobby, player, error, starting, copied } = this.state;
+        const { lobby, player, error, starting, copied,
+                showBotForm, botCount, botApiKey, botModel, botProvider, addingBots } = this.state;
         const isHost = player.is_host;
+        const spotsLeft = lobby.n_powers - lobby.player_count;
 
         return (
             <div className="lobby-container">
@@ -352,6 +441,9 @@ export class ContentLobby extends React.Component {
                     <div className="lobby-meta">
                         <span className="lobby-map">{lobby.map_name}</span>
                         <span className="lobby-count">{lobby.player_count} / {lobby.n_powers} players</span>
+                        {lobby.enable_talk && (
+                            <span className="lobby-talk-badge">TALK {lobby.talk_rounds}R</span>
+                        )}
                     </div>
                 </div>
 
@@ -364,11 +456,12 @@ export class ContentLobby extends React.Component {
                             <span className="lobby-player-name">
                                 {p.display_name}
                                 {p.is_host && <span className="lobby-host-badge">HOST</span>}
+                                {p.is_bot && <span className="lobby-bot-badge">AI</span>}
                                 {p.username === player.username && <span className="lobby-you-badge">YOU</span>}
                             </span>
                         </div>
                     ))}
-                    {Array.from({ length: lobby.n_powers - lobby.player_count }, (_, i) => (
+                    {Array.from({ length: spotsLeft }, (_, i) => (
                         <div key={`empty-${i}`} className="lobby-player empty">
                             <span className="lobby-player-name">Waiting for player...</span>
                         </div>
@@ -382,8 +475,77 @@ export class ContentLobby extends React.Component {
                     {copied ? 'COPIED' : 'COPY API'}
                 </button>
 
+                {isHost && spotsLeft > 0 && !showBotForm && (
+                    <button
+                        className="lobby-add-bot-btn"
+                        onClick={() => this.setState({ showBotForm: true, botCount: Math.min(6, spotsLeft) })}
+                    >+ ADD AI PLAYERS</button>
+                )}
+
+                {isHost && showBotForm && (
+                    <form className="bot-form" onSubmit={this.onAddBots}>
+                        <div className="bot-form-title">ADD AI PLAYERS</div>
+                        <div className="landing-field">
+                            <label className="landing-label">COUNT</label>
+                            <select
+                                className="landing-select"
+                                value={botCount}
+                                onChange={e => this.setState({ botCount: parseInt(e.target.value) })}
+                            >
+                                {Array.from({ length: spotsLeft }, (_, i) => (
+                                    <option key={i + 1} value={i + 1}>{i + 1}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="landing-field">
+                            <label className="landing-label">PROVIDER</label>
+                            <select
+                                className="landing-select"
+                                value={botProvider}
+                                onChange={e => this.setState({ botProvider: e.target.value })}
+                            >
+                                <option value="anthropic">Anthropic (Claude)</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="google">Google (Gemini)</option>
+                            </select>
+                        </div>
+                        <div className="landing-field">
+                            <label className="landing-label">API KEY</label>
+                            <input
+                                className="landing-input"
+                                type="password"
+                                value={botApiKey}
+                                onChange={e => this.setState({ botApiKey: e.target.value })}
+                                placeholder="sk-..."
+                            />
+                        </div>
+                        <div className="landing-field">
+                            <label className="landing-label">MODEL (optional)</label>
+                            <input
+                                className="landing-input"
+                                type="text"
+                                value={botModel}
+                                onChange={e => this.setState({ botModel: e.target.value })}
+                                placeholder="Default model"
+                            />
+                        </div>
+                        <div className="bot-form-actions">
+                            <button
+                                type="button"
+                                className="order-action-btn order-clear-btn"
+                                onClick={() => this.setState({ showBotForm: false })}
+                            >CANCEL</button>
+                            <button
+                                type="submit"
+                                className="order-action-btn order-submit-btn"
+                                disabled={addingBots}
+                            >{addingBots ? 'ADDING...' : 'ADD'}</button>
+                        </div>
+                    </form>
+                )}
+
                 {isHost && (
-                    <button className="landing-btn" onClick={this.onStart} disabled={starting}>
+                    <button className="landing-btn" onClick={this.onStart} disabled={starting || lobby.player_count < 2}>
                         {starting ? 'STARTING...' : `START GAME (${lobby.player_count} player${lobby.player_count !== 1 ? 's' : ''})`}
                     </button>
                 )}
@@ -411,6 +573,108 @@ export class ContentLobby extends React.Component {
                 onSelectVia={this.onSelectVia}
                 orders={mapOrders}
             />
+        );
+    }
+
+    renderTalkPanel() {
+        const { gameState, player, talkRound, talkRoundState, talkNumRounds,
+                talkMaxMessages, talkReadyPowers, messages,
+                draftRecipient, draftMessage, sendingMessage, readySent } = this.state;
+        if (!gameState) return null;
+
+        const yourPower = gameState.your_power;
+        const allPowers = Object.keys(gameState.powers);
+        const otherPowers = allPowers.filter(p => p !== yourPower);
+        const isRoundOpen = talkRoundState === 'round_open';
+
+        // Use local counter (server holds messages until round closes)
+        const sentThisRound = this.state.messagesSentThisRound;
+        const canSend = isRoundOpen && sentThisRound < talkMaxMessages && !readySent;
+
+        return (
+            <div className="game-section talk-panel">
+                <div className="talk-header">
+                    <span className="talk-round-label">
+                        TALK ROUND {talkRound}/{talkNumRounds}
+                    </span>
+                    <span className={`talk-state-label ${talkRoundState}`}>
+                        {isRoundOpen ? 'OPEN' : talkRoundState === 'orders_open' ? 'ORDERS' : talkRoundState.toUpperCase()}
+                    </span>
+                </div>
+
+                {/* Ready status dots */}
+                <div className="talk-ready-row">
+                    {allPowers.map(p => (
+                        <span
+                            key={p}
+                            className={`talk-ready-dot ${talkReadyPowers.includes(p) ? 'ready' : ''} ${p === yourPower ? 'is-you' : ''}`}
+                            title={p}
+                        >{p.substring(0, 3)}</span>
+                    ))}
+                </div>
+
+                {/* Messages thread */}
+                <div className="talk-messages">
+                    {messages.length === 0 && (
+                        <div className="talk-no-messages">
+                            {isRoundOpen
+                                ? 'Messages are revealed when all players are ready.'
+                                : 'No messages this phase.'}
+                        </div>
+                    )}
+                    {messages.map((m, i) => (
+                        <div key={i} className={`talk-msg ${m.sender === yourPower ? 'sent' : 'received'}`}>
+                            <div className="talk-msg-header">
+                                <span className="talk-msg-sender">{m.sender}</span>
+                                <span className="talk-msg-arrow">{m.recipient === 'GLOBAL' ? 'PUBLIC' : `to ${m.recipient}`}</span>
+                            </div>
+                            <div className="talk-msg-body">{m.message}</div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Compose area (only during round_open) */}
+                {isRoundOpen && !readySent && (
+                    <form className="talk-compose" onSubmit={this.onSendMessage}>
+                        <div className="talk-compose-top">
+                            <select
+                                className="talk-recipient-select"
+                                value={draftRecipient}
+                                onChange={e => this.setState({ draftRecipient: e.target.value })}
+                            >
+                                <option value="">To...</option>
+                                {otherPowers.map(p => (
+                                    <option key={p} value={p}>{p}</option>
+                                ))}
+                                <option value="GLOBAL">PUBLIC (all)</option>
+                            </select>
+                            <span className="talk-msg-counter">{sentThisRound}/{talkMaxMessages}</span>
+                        </div>
+                        <textarea
+                            className="talk-textarea"
+                            value={draftMessage}
+                            onChange={e => this.setState({ draftMessage: e.target.value })}
+                            placeholder="Write a message..."
+                            maxLength={500}
+                            rows={2}
+                        />
+                        <button
+                            type="submit"
+                            className="talk-send-btn"
+                            disabled={sendingMessage || !canSend || !draftRecipient || !draftMessage.trim()}
+                        >{sendingMessage ? 'SENDING...' : 'SEND'}</button>
+                    </form>
+                )}
+
+                {/* Done talking button */}
+                {isRoundOpen && (
+                    <button
+                        className={`talk-ready-btn ${readySent ? 'sent' : ''}`}
+                        onClick={this.onReady}
+                        disabled={readySent}
+                    >{readySent ? 'WAITING FOR OTHERS...' : 'DONE TALKING'}</button>
+                )}
+            </div>
         );
     }
 
@@ -520,8 +784,14 @@ export class ContentLobby extends React.Component {
                 )}
 
                 <div className="game-sidebar">
-                    {/* Order type selector */}
-                    {!isDone && allowedOrderTypes.length > 0 && !submitted && (
+                    {/* Talk phase panel */}
+                    {!isDone && gameState.phase_type === 'T' && this.state.talkRoundState === 'round_open' && (
+                        this.renderTalkPanel()
+                    )}
+
+                    {/* Order type selector — shown during orders_open (Talk) or M/R/A phases */}
+                    {!isDone && allowedOrderTypes.length > 0 && !submitted
+                        && (gameState.phase_type !== 'T' || this.state.talkRoundState === 'orders_open') && (
                         <div className="game-section">
                             <div className="game-section-title">ORDER TYPE</div>
                             <div className="order-type-buttons">
@@ -544,7 +814,7 @@ export class ContentLobby extends React.Component {
                     )}
 
                     {/* Built orders list */}
-                    {!isDone && (
+                    {!isDone && (gameState.phase_type !== 'T' || this.state.talkRoundState === 'orders_open') && (
                         <div className="game-section">
                             <div className="game-section-title">
                                 {submitted ? 'ORDERS SUBMITTED' : `ORDERS (${orderedCount}/${orderableCount})`}
@@ -579,6 +849,18 @@ export class ContentLobby extends React.Component {
                                     >{submitting ? 'SUBMITTING...' : 'SUBMIT ORDERS'}</button>
                                 </div>
                             )}
+                            {/* Ready button during orders_open (Talk phase) */}
+                            {gameState.phase_type === 'T' && this.state.talkRoundState === 'orders_open' && submitted && !this.state.readySent && (
+                                <button
+                                    className="talk-ready-btn"
+                                    onClick={this.onReady}
+                                >SUBMIT & READY</button>
+                            )}
+                            {gameState.phase_type === 'T' && this.state.talkRoundState === 'orders_open' && this.state.readySent && (
+                                <div className="talk-ready-btn sent" style={{textAlign: 'center', marginTop: 8}}>
+                                    WAITING FOR OTHERS...
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -595,8 +877,8 @@ export class ContentLobby extends React.Component {
                         ))}
                     </div>
 
-                    {/* Host controls */}
-                    {isHost && !isDone && (
+                    {/* Host controls — only show PROCESS for non-Talk or fallback */}
+                    {isHost && !isDone && gameState.phase_type !== 'T' && (
                         <button
                             className="landing-btn game-process-btn"
                             onClick={this.onProcess}

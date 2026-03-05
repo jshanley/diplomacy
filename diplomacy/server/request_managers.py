@@ -1107,8 +1107,18 @@ def on_set_wait_flag(server, request, connection_handler):
     # Talk phase: wait=False means "I'm ready for this round"
     if level.game.phase_type == 'T' and not request.wait:
         level.game.talk_ready.add(level.power_name)
+        LOGGER.info('Talk ready: %s added (%d/%d ready)',
+                     level.power_name, len(level.game.talk_ready),
+                     sum(1 for p in level.game.powers.values()
+                         if not p.is_eliminated() and p.is_controlled()))
         if level.game.talk_round_complete():
-            server.force_game_processing(level.game)
+            LOGGER.info('Talk round complete — advancing via process()')
+            # Call process() directly — force_game_processing's scheduler
+            # validator (does_not_wait) rejects Talk rounds since orders
+            # aren't set yet during round_open.
+            level.game.process()
+            LOGGER.info('Talk state now: round=%d state=%s',
+                         level.game.talk_round, level.game.talk_round_state)
     elif level.game.phase_type == 'T' and request.wait:
         level.game.talk_ready.discard(level.power_name)
     elif level.game.does_not_wait():
