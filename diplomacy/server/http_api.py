@@ -732,11 +732,14 @@ class LobbyCreateHandler(_BaseApiHandler):
 
         map_name = body.get('map_name', 'standard')
         assignment = body.get('assignment', 'random')
+        enable_talk = body.get('enable_talk', True)
+        talk_rounds = body.get('talk_rounds', 2)
 
         try:
             lobby, player = self.server.lobby_manager.create_game(
                 username, display_name, token,
-                map_name=map_name, assignment=assignment)
+                map_name=map_name, assignment=assignment,
+                enable_talk=enable_talk, talk_rounds=talk_rounds)
         except Exception as e:
             return self._error(400, str(e))
 
@@ -889,6 +892,18 @@ class LobbyGameStateHandler(_BaseApiHandler):
         # Include map info so the client can render the SVG map
         map_info = self.server.get_map(lobby.map_name)
 
+        # Messages visible to this player in the current phase
+        visible_messages = []
+        if game.messages:
+            filtered = game.filter_messages(game.messages, power_name)
+            for msg in filtered.values():
+                visible_messages.append({
+                    'sender': msg.sender,
+                    'recipient': msg.recipient,
+                    'message': msg.message,
+                    'time_sent': msg.time_sent,
+                })
+
         self._ok({
             'code': code,
             'game_id': lobby.game_id,
@@ -899,6 +914,14 @@ class LobbyGameStateHandler(_BaseApiHandler):
             'is_done': game.is_game_done,
             'powers': powers,
             'map_info': map_info,
+            # Talk phase state
+            'phase_type': game.phase_type or '',
+            'talk_round': getattr(game, 'talk_round', 0),
+            'talk_round_state': getattr(game, 'talk_round_state', ''),
+            'talk_num_rounds': getattr(game, 'talk_num_rounds', 2),
+            'talk_max_messages': getattr(game, 'talk_max_messages_per_round', 5),
+            'talk_ready_powers': list(getattr(game, 'talk_ready', set())),
+            'messages': visible_messages,
         })
 
 
@@ -1045,6 +1068,220 @@ class LobbyOrdersHandler(_BaseApiHandler):
             'power': power_name,
             'orders_submitted': valid_orders,
             'wait': wait,
+        })
+
+
+class LobbyMessageHandler(_BaseApiHandler):
+    """POST /api/lobby/{code}/messages — send a diplomatic message during Talk phase."""
+
+    def _get_player(self, lobby):
+        token = self._get_token()
+        if not token:
+            return None
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        username = self._get_username(token)
+        if username:
+            player = lobby.get_player_by_username(username)
+            if player:
+                player.token = token
+                return player
+        return None
+
+    def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby or lobby.status != 'started':
+            return self._error(400, 'Game not started')
+
+        player = self._get_player(lobby)
+        if not player:
+            return self._error(403, 'You are not in this game')
+
+        body = self._json_body()
+        if body is None:
+            return
+
+        recipient = body.get('recipient', '').strip().upper()
+        message_text = body.get('message', '').strip()
+
+        if not recipient:
+            return self._error(400, 'Provide "recipient" (power name or "GLOBAL")')
+        if not message_text:
+            return self._error(400, 'Provide "message"')
+
+        game = self.server.get_game(lobby.game_id)
+        power_name = player.power
+
+        if game.phase_type != 'T':
+            return self._error(400, 'Messages can only be sent during Talk phases')
+        if getattr(game, 'talk_round_state', '') != 'round_open':
+            return self._error(400, 'Message round is not open')
+
+        # Validate recipient
+        if recipient != 'GLOBAL' and recipient not in game.powers:
+            return self._error(400, '"%s" is not a valid power' % recipient)
+        if recipient == power_name:
+            return self._error(400, 'Cannot send message to yourself')
+
+        from diplomacy.engine.message import Message
+        msg = Message(
+            sender=power_name,
+            recipient=recipient,
+            phase=game.get_current_phase(),
+            message=message_text,
+        )
+
+        conn = _EphemeralConnection()
+        self._attach_token(token, conn)
+
+        try:
+            req = requests.SendGameMessage.from_dict({
+                'name': 'send_game_message',
+                'request_id': 'lobby_msg',
+                'token': token,
+                'game_id': lobby.game_id,
+                'game_role': power_name,
+                'phase': game.get_current_phase(),
+                'message': msg.to_dict(),
+            })
+            result = request_managers.handle_request(self.server, req, conn)
+            from tornado.concurrent import Future
+            if isinstance(result, Future):
+                result.result()
+        except exceptions.DiplomacyException as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'sent': True,
+            'round': getattr(game, 'talk_round', 0),
+            'sender': power_name,
+            'recipient': recipient,
+        })
+
+
+class LobbyReadyHandler(_BaseApiHandler):
+    """POST /api/lobby/{code}/ready — signal ready to advance Talk round."""
+
+    def _get_player(self, lobby):
+        token = self._get_token()
+        if not token:
+            return None
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        username = self._get_username(token)
+        if username:
+            player = lobby.get_player_by_username(username)
+            if player:
+                player.token = token
+                return player
+        return None
+
+    def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby or lobby.status != 'started':
+            return self._error(400, 'Game not started')
+
+        player = self._get_player(lobby)
+        if not player:
+            return self._error(403, 'You are not in this game')
+
+        game = self.server.get_game(lobby.game_id)
+        power_name = player.power
+
+        conn = _EphemeralConnection()
+        self._attach_token(token, conn)
+
+        try:
+            req = requests.SetWaitFlag.from_dict({
+                'name': 'set_wait_flag',
+                'request_id': 'lobby_ready',
+                'token': token,
+                'game_id': lobby.game_id,
+                'game_role': power_name,
+                'phase': game.get_current_phase(),
+                'wait': False,
+            })
+            result = request_managers.handle_request(self.server, req, conn)
+            from tornado.concurrent import Future
+            if isinstance(result, Future):
+                result.result()
+        except exceptions.DiplomacyException as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'ready': True,
+            'power': power_name,
+            'round': getattr(game, 'talk_round', 0),
+            'round_state': getattr(game, 'talk_round_state', ''),
+        })
+
+
+class LobbyBotsHandler(_BaseApiHandler):
+    """POST /api/lobby/{code}/bots — add AI players (host only, before game start)."""
+
+    def _get_player(self, lobby):
+        token = self._get_token()
+        if not token:
+            return None
+        player = lobby.get_player_by_token(token)
+        if player:
+            return player
+        username = self._get_username(token)
+        if username:
+            return lobby.get_player_by_username(username)
+        return None
+
+    def post(self, code):
+        token = self._get_token()
+        if not token:
+            return self._error(401, 'Missing Authorization header')
+
+        lobby = self.server.lobby_manager.get_lobby(code)
+        if not lobby:
+            return self._error(404, 'No game found with code "%s"' % code)
+        if lobby.status != 'waiting':
+            return self._error(400, 'Bots can only be added before the game starts')
+
+        player = self._get_player(lobby)
+        if not player or not player.is_host:
+            return self._error(403, 'Only the host can add bots')
+
+        body = self._json_body()
+        if body is None:
+            return
+
+        count = body.get('count', 1)
+        api_key = body.get('api_key', '').strip()
+        model = body.get('model', 'claude-sonnet-4-20250514')
+        provider = body.get('provider', 'anthropic')
+
+        if not api_key:
+            return self._error(400, 'Provide "api_key"')
+
+        slots_remaining = lobby.n_powers - lobby.player_count()
+        if count > slots_remaining:
+            return self._error(400, 'Only %d slot(s) remaining' % slots_remaining)
+
+        username = self._get_username(token)
+        try:
+            updated_lobby = self.server.lobby_manager.add_bots(
+                code, username, count, api_key, model=model, provider=provider)
+        except Exception as e:
+            return self._error(400, str(e))
+
+        self._ok({
+            'bots_added': count,
+            'lobby': updated_lobby.to_dict(),
         })
 
 
@@ -1200,5 +1437,8 @@ def get_api_routes(server):
         tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/start', LobbyStartHandler, kwargs),
         tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/game', LobbyGameStateHandler, kwargs),
         tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/orders', LobbyOrdersHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/messages', LobbyMessageHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/ready', LobbyReadyHandler, kwargs),
+        tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/bots', LobbyBotsHandler, kwargs),
         tornado.web.url(r'/api/lobby/([A-Z0-9]{4})/process', LobbyProcessHandler, kwargs),
     ]

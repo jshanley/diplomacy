@@ -224,7 +224,10 @@ class Game(Jsonable):
                  'convoy_paths_dest', 'zobrist_hash', 'renderer', 'game_id', 'map_name', 'role', 'rules',
                  'message_history', 'state_history', 'result_history', 'status', 'timestamp_created', 'n_controls',
                  'deadline', 'registration_password', 'observer_level', 'controlled_powers', '_phase_wrapper_type',
-                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state']
+                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state',
+                 'talk_num_rounds', 'talk_max_messages_per_round', 'talk_max_chars_per_message',
+                 'talk_round_deadline', 'talk_orders_deadline',
+                 'talk_max_communiques_per_year', 'talk_max_communique_chars']
     zobrist_tables = {}
     rule_cache = ()
     model = {
@@ -256,6 +259,13 @@ class Game(Jsonable):
         strings.STATE_HISTORY: parsing.DefaultValueType(parsing.DictType(str, dict), {}),
         strings.STATUS: parsing.DefaultValueType(parsing.EnumerationType(strings.ALL_GAME_STATUSES), strings.FORMING),
         strings.TIMESTAMP_CREATED: parsing.OptionalValueType(int),
+        strings.TALK_MAX_CHARS_PER_MESSAGE: parsing.DefaultValueType(int, 500),
+        strings.TALK_MAX_COMMUNIQUE_CHARS: parsing.DefaultValueType(int, 500),
+        strings.TALK_MAX_COMMUNIQUES_PER_YEAR: parsing.DefaultValueType(int, 1),
+        strings.TALK_MAX_MESSAGES_PER_ROUND: parsing.DefaultValueType(int, 5),
+        strings.TALK_NUM_ROUNDS: parsing.DefaultValueType(int, 2),
+        strings.TALK_ORDERS_DEADLINE: parsing.DefaultValueType(int, 0),
+        strings.TALK_ROUND_DEADLINE: parsing.DefaultValueType(int, 0),
         strings.VICTORY: parsing.DefaultValueType(parsing.SequenceType(int), []),
         strings.WIN: parsing.DefaultValueType(int, 0),
         strings.ZOBRIST_HASH: parsing.DefaultValueType(int, 0),
@@ -293,6 +303,13 @@ class Game(Jsonable):
         self.controlled_powers = None
         self.daide_port = None
         self.fixed_state = None
+        self.talk_num_rounds = 2
+        self.talk_max_messages_per_round = 5
+        self.talk_max_chars_per_message = 500
+        self.talk_round_deadline = 0
+        self.talk_orders_deadline = 0
+        self.talk_max_communiques_per_year = 1
+        self.talk_max_communique_chars = 500
 
         # Caches
         self._unit_owner_cache = None               # {(unit, coast_required): owner}
@@ -1727,8 +1744,8 @@ class Game(Jsonable):
         build_sites = {power_name: self._build_sites(power) if self.phase_type == 'A' else []
                        for power_name, power in self.powers.items()}
 
-        # Movement phase
-        if self.phase_type == 'M':
+        # Movement phase (T = Talk phase, orders are still movement orders)
+        if self.phase_type in ('M', 'T'):
 
             # Building a list of units and homes for each power
             power_units = {power_name: power.units[:] for power_name, power in self.powers.items()}
@@ -2750,6 +2767,14 @@ class Game(Jsonable):
             :return: Nothing
         """
         self._move_to_start_phase()
+
+        # If Talk is enabled, back up to the Talk phase before Movement.
+        if self.phase_type == 'M' and 'NO_TALK' not in self.rules:
+            talk_phase = self.map.find_previous_phase(self.phase, phase_type='T')
+            if talk_phase not in (None, '', 'FORMING', 'COMPLETED'):
+                self.phase = talk_phase
+                self.phase_type = 'T'
+
         self.note = ''
         self.win = self.victory[0]
 
@@ -2872,6 +2897,12 @@ class Game(Jsonable):
 
         # When changing phases, clearing all caches
         self.clear_cache()
+
+        # Talk phase - Skip if NO_TALK rule is set
+        if self.phase_type == 'T':
+            if 'NO_TALK' in self.rules:
+                return 1
+            return 0
 
         # Movement phase - Always need to process
         if self.phase_type == 'M':

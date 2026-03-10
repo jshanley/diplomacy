@@ -441,6 +441,26 @@ class Server:
         self.save_game(server_game)
 
         if previous_phase_data is None and kicked_powers is None:
+            # Check if this is a Talk round advance (game still active in Talk)
+            if server_game.is_game_active and server_game.phase_type == 'T':
+                # Deliver any messages from the just-closed round
+                notifier = Notifier(self)
+                if server_game._last_press_log:
+                    yield notifier.notify_talk_press_log(server_game)
+                    server_game._last_press_log = []
+                for msg in server_game._last_delivered_messages:
+                    yield notifier.notify_game_message(server_game, msg)
+                server_game._last_delivered_messages = []
+                yield notifier.notify_talk_round_update(server_game)
+                # Reschedule with talk-specific deadline if configured
+                if server_game.talk_round_state == strings.ORDERS_OPEN:
+                    deadline = server_game.talk_orders_deadline
+                else:
+                    deadline = server_game.talk_round_deadline
+                if deadline and deadline > 0:
+                    yield self.schedule_game_with_deadline(server_game, deadline)
+                    return True  # already re-added with correct deadline
+                return False  # keep scheduled with original deadline
             # Game must be unscheduled immediately.
             return True
 
@@ -825,6 +845,19 @@ class Server:
         """
         if (yield self.games_scheduler.has_data(server_game)):
             yield self.games_scheduler.remove_data(server_game)
+
+    @gen.coroutine
+    def schedule_game_with_deadline(self, server_game, deadline):
+        """ Schedule a game with a specific deadline (e.g. for talk round timers).
+
+            :param server_game: game
+            :param deadline: deadline in seconds
+            :type server_game: ServerGame
+            :type deadline: int
+        """
+        if (yield self.games_scheduler.has_data(server_game)):
+            yield self.games_scheduler.remove_data(server_game)
+        yield self.games_scheduler.add_data(server_game, deadline)
 
     @gen.coroutine
     def force_game_processing(self, server_game):

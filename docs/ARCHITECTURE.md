@@ -73,7 +73,9 @@ game.get_units('FRANCE')              # ['A MAR']
 game.get_centers('FRANCE')            # ['PAR', 'MAR', 'BRE']
 ```
 
-**Phase cycle:** `SPRING M → SPRING R → FALL M → FALL R → WINTER A → repeat`
+**Phase cycle:** `SPRING T → SPRING M → SPRING R → FALL T → FALL M → FALL R → WINTER A → repeat`
+
+Talk (T) phases are skipped by default (`NO_TALK` rule). When enabled, each Talk phase runs a configurable number of negotiation rounds with batch message delivery before advancing to the Movement phase.
 
 ### Server (`diplomacy/server/`)
 
@@ -82,7 +84,7 @@ Tornado-based async server. Handles connections, auth, game lifecycle, notificat
 | File | Lines | Purpose |
 |------|-------|---------|
 | `server.py` | 1,005 | Main server. Startup, game management, backup. |
-| `server_game.py` | 726 | Game wrapper with role-based filtering and server hooks. |
+| `server_game.py` | 726 | Game wrapper with role-based filtering, Talk round state machine, batch delivery. |
 | `connection_handler.py` | 136 | WebSocket handler. JSON in, JSON out. |
 | `request_managers.py` | 1,268 | Routes requests to handlers. All game actions go through here. |
 | `notifier.py` | 760 | Broadcasts state changes to connected clients. |
@@ -121,7 +123,7 @@ Protocol definitions. Request/response/notification classes shared by client and
 
 - **Requests:** `SignIn`, `CreateGame`, `JoinGame`, `SetOrders`, `SendGameMessage`, etc.
 - **Responses:** `Ok`, `Error`, `DataGame`, `DataToken`, etc.
-- **Notifications:** `GamePhaseUpdate`, `GameProcessed`, `GameMessageReceived`, etc.
+- **Notifications:** `GamePhaseUpdate`, `GameProcessed`, `GameMessageReceived`, `TalkRoundUpdate`, `TalkPressLog`, etc.
 
 ### Web (`diplomacy/web/`)
 
@@ -131,6 +133,34 @@ React 18 frontend, built with Vite, styled with Bootstrap 5.
 - Dark-themed lobby (dashboard, landing, lobby views)
 - Hash-based routing
 - Communicates with server via same WebSocket protocol as Python client
+
+### Agents (`diplomacy/agents/`)
+
+Agent framework for AI-powered Diplomacy play. Model-agnostic — works with any LLM provider.
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `base_agent.py` | 70 | Abstract base class: `generate_orders()`, `generate_messages()`, lifecycle hooks. |
+| `agent_def.py` | 55 | Agent metadata: creator, model_id, instructions, version, metadata. |
+| `dumb_bot.py` | 63 | Random legal orders agent (pipeline proof). |
+| `llm_agent.py` | 140 | LLM-powered agent with fallback to random on errors. |
+| `llm_provider.py` | 165 | Abstract `LLMProvider` + OpenAI, Anthropic, Google, Grok, Stub implementations. |
+| `state_formatter.py` | 130 | Game state → structured text for LLM prompts. |
+| `order_parser.py` | 100 | LLM response → validated order strings + diplomatic messages. |
+| `harness.py` | 260 | `run_local_game()` (fast) + `run_network_game()` (full pipeline with Talk). |
+
+**Quick start:**
+```python
+from diplomacy.agents import DumbBot, LLMAgent, OpenAIProvider, run_local_game
+
+# Random bot game (no API key needed)
+result = run_local_game(DumbBot(seed=42))
+
+# LLM agent game
+provider = OpenAIProvider(api_key='sk-...', model='gpt-4o')
+agent = LLMAgent(provider, instructions='Be aggressive. Expand quickly.')
+result = run_local_game(agent)
+```
 
 ### DAIDE (`diplomacy/daide/`)
 
@@ -163,14 +193,39 @@ All players ready (or deadline expires)
     → Scheduler sets next deadline
 ```
 
-### Message Relay
+### Message Relay (Standard)
 ```
-Player sends message
+Player sends message (non-Talk phase)
   → Client sends SendGameMessage request
     → server validates (sender controls power, game is active)
     → message stored in game state
     → Notifier sends GameMessageReceived to recipient(s)
-  → Press log metadata recorded
+```
+
+### Message Relay (Talk Phase — Batch Delivery)
+```
+Player sends message during Talk round_open
+  → Client sends SendGameMessage request
+    → request_managers intercepts (phase_type == 'T', round_open)
+    → validates: count limit, char limit, communique quota
+    → message held in talk_held_messages (not delivered)
+    → status: 'valid' or 'void' (void messages still count against quota)
+    → synthetic timestamp response returned to client
+
+All powers signal ready (or deadline expires)
+  → Scheduler triggers processing
+    → _close_talk_round():
+      → _generate_press_log() captures metadata (sender, recipient, char_count, status, type)
+      → valid messages: create Message objects, add to game.messages with server timestamps
+      → void messages: discarded
+      → talk_held_messages cleared for this round
+    → _process_game() dispatches:
+      → TalkPressLog notification (metadata only, no message bodies)
+      → GameMessageReceived for each delivered message
+      → TalkRoundUpdate notification (new round state)
+    → If more rounds remain: open next round
+    → If final round done: transition to orders_open
+    → If orders_open done: advance to Movement phase
 ```
 
 ## What Exists vs. What We Need to Build
@@ -186,9 +241,26 @@ Player sends message
 - Per-player game logging
 - React web UI with interactive map
 
+### Recently Built (Track A — `feature/talk-phase-engine`)
+- **Talk phase engine** — `'T'` phase type in map sequence, `NO_TALK` rule for backward compatibility
+- **Negotiation round state machine** — Configurable multi-round Talk phases with ready signaling
+- **Batch message collection & delivery** — Messages held during rounds, delivered simultaneously on close
+- **Message limits** — Per-round count limits, character limits, void tracking
+- **Public communiques** — Per-year quota, separate from private messages, delivered as GLOBAL
+- **Press log** — Metadata-only broadcast after each round (sender, recipient, char_count, status, type)
+- **Timer/deadline integration** — Round-specific deadlines with auto-advance
+- **Client notifications** — `TalkRoundUpdate` and `TalkPressLog` (Python + JS)
+
+### Recently Built (Track B — Agent Framework)
+- **Agent framework** — `BaseAgent` abstract class, `AgentDef` metadata, `DumbBot` random agent
+- **LLM provider layer** — Model-agnostic interface with OpenAI, Anthropic, Google, Grok providers
+- **Game state serializer** — Formats board state, units, centers, possible orders into structured text for LLM prompts
+- **Order parser** — Extracts valid orders from LLM text responses (handles bullets, numbering, backticks)
+- **LLM smart bot** — `LLMAgent` that plays full games with LLM-generated orders and diplomatic messages
+- **Game harness** — `run_local_game()` (fast, no server) and `run_network_game()` (full pipeline with Talk support)
+- **58 agent tests** — All using `StubProvider`, no API keys required
+
 ### Needs to Be Built
-- **Agent runner** — Takes agent definition + API key, connects to server, feeds game state to LLM, submits orders and messages
-- **Press engine** — Batch delivery (Round A/B), message limits, character counting, public communiques, press logs
 - **Game mode configuration** — Three modes with smart defaults, admin setup flow
 - **Admin portal** — Game creation wizard with full specification options
 - **Player portal** — In-game UI for humans (order submission, negotiation, map view)

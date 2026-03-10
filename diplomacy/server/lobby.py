@@ -31,11 +31,12 @@ LOBBY_STATUS_STARTED = 'started'
 class Player:
     """A player in a lobby, backed by a stable user identity."""
 
-    def __init__(self, username, display_name, token, is_host=False):
+    def __init__(self, username, display_name, token, is_host=False, is_bot=False):
         self.username = username      # stable identity (JWT sub)
         self.display_name = display_name
         self.token = token            # current JWT (may be refreshed)
         self.is_host = is_host
+        self.is_bot = is_bot
         self.power = None             # assigned when game starts
         self.joined_at = time.time()
 
@@ -44,6 +45,7 @@ class Player:
             'username': self.username,
             'display_name': self.display_name,
             'is_host': self.is_host,
+            'is_bot': self.is_bot,
             'power': self.power,
         }
 
@@ -52,15 +54,19 @@ class GameLobby:
     """A lobby for a single game, identified by a short code."""
 
     def __init__(self, code, host_player, map_name='standard',
-                 assignment=ASSIGNMENT_RANDOM, n_powers=7):
+                 assignment=ASSIGNMENT_RANDOM, n_powers=7,
+                 enable_talk=True, talk_rounds=2):
         self.code = code
         self.map_name = map_name
         self.assignment = assignment
         self.n_powers = n_powers
+        self.enable_talk = enable_talk
+        self.talk_rounds = talk_rounds
         self.status = LOBBY_STATUS_WAITING
         self.players = {}   # username -> Player
         self.host_username = host_player.username
         self.game_id = None  # set when engine game is created
+        self.bot_configs = {}  # username -> {api_key, model, provider}
         self.created_at = time.time()
 
         self.add_player(host_player)
@@ -93,6 +99,8 @@ class GameLobby:
             'map_name': self.map_name,
             'assignment': self.assignment,
             'n_powers': self.n_powers,
+            'enable_talk': self.enable_talk,
+            'talk_rounds': self.talk_rounds,
             'status': self.status,
             'players': [p.to_dict() for p in self.players.values()],
             'player_count': self.player_count(),
@@ -159,7 +167,8 @@ class LobbyManager:
         return conn
 
     def create_game(self, username, display_name, token,
-                    map_name='standard', assignment=ASSIGNMENT_RANDOM):
+                    map_name='standard', assignment=ASSIGNMENT_RANDOM,
+                    enable_talk=True, talk_rounds=2):
         """Create a new game lobby. The caller provides their stable identity.
 
         Returns (lobby, player).
@@ -174,10 +183,12 @@ class LobbyManager:
         n_powers = len(map_info['powers']) if map_info else 7
 
         lobby = GameLobby(code, host, map_name=map_name,
-                          assignment=assignment, n_powers=n_powers)
+                          assignment=assignment, n_powers=n_powers,
+                          enable_talk=enable_talk, talk_rounds=talk_rounds)
         self.lobbies[code] = lobby
 
-        LOGGER.info('Game created: code=%s host=%s map=%s', code, display_name, map_name)
+        LOGGER.info('Game created: code=%s host=%s map=%s talk=%s',
+                     code, display_name, map_name, enable_talk)
         return lobby, host
 
     def join_game(self, code, username, display_name, token):
@@ -226,6 +237,52 @@ class LobbyManager:
                 return lobby
         return None
 
+    def add_bots(self, code, username, count, api_key, model=None, provider='anthropic'):
+        """Host adds AI players to the lobby.
+
+        Returns the lobby with updated player list.
+        """
+        code = code.upper().strip()
+        lobby = self.lobbies.get(code)
+        if not lobby:
+            raise ValueError('Game not found')
+        if username != lobby.host_username:
+            raise ValueError('Only the host can add bots')
+        if lobby.status != LOBBY_STATUS_WAITING:
+            raise ValueError('Game has already started')
+
+        bot_names = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta',
+                     'Eta', 'Theta', 'Iota', 'Kappa']
+        existing_bot_count = sum(1 for p in lobby.players.values() if p.is_bot)
+
+        spaces = lobby.n_powers - lobby.player_count()
+        if count > spaces:
+            raise ValueError(f'Only {spaces} spots available')
+
+        from diplomacy.utils.token import create_token
+
+        for i in range(count):
+            name_idx = existing_bot_count + i
+            display_name = f'AI {bot_names[name_idx % len(bot_names)]}'
+            bot_username = f'bot_{code.lower()}_{name_idx}'
+            bot_token = create_token(self.server.secret_key, bot_username)
+
+            self._ensure_user_registered(bot_username, bot_token)
+
+            player = Player(bot_username, display_name, bot_token, is_bot=True)
+            lobby.add_player(player)
+
+            lobby.bot_configs[bot_username] = {
+                'api_key': api_key,
+                'model': model,
+                'provider': provider,
+            }
+
+            LOGGER.info('Bot added: code=%s name=%s (%d/%d)',
+                         code, display_name, lobby.player_count(), lobby.n_powers)
+
+        return lobby
+
     def start_game(self, code, username):
         """Host starts the game.
 
@@ -266,6 +323,11 @@ class LobbyManager:
         system_token = self._get_system_token()
         system_conn = self._attach_token(system_token)
 
+        # Build rules based on lobby config
+        rules = ['POWER_CHOICE']
+        if not lobby.enable_talk:
+            rules.extend(['NO_TALK', 'NO_PRESS'])
+
         try:
             create_req = req_mod.CreateGame.from_dict({
                 'name': 'create_game',
@@ -275,7 +337,7 @@ class LobbyManager:
                 'n_controls': n_controls,
                 'deadline': 0,
                 'map_name': lobby.map_name,
-                'rules': ['POWER_CHOICE'],
+                'rules': rules,
             })
             result = request_managers.handle_request(
                 self.server, create_req, system_conn)
@@ -284,6 +346,12 @@ class LobbyManager:
                 result = result.result()
         except Exception as e:
             raise ValueError(f'Failed to create engine game: {e}')
+
+        # Set talk config on the engine game directly
+        if lobby.enable_talk:
+            engine_game = self.server.get_game(game_id)
+            if engine_game:
+                engine_game.talk_num_rounds = lobby.talk_rounds
 
         # Step 2: Each player joins the engine game as their assigned power
         for player in players:
@@ -313,6 +381,26 @@ class LobbyManager:
 
         lobby.status = LOBBY_STATUS_STARTED
         lobby.game_id = game_id
+
+        # Kick off Talk round 1 directly
+        try:
+            engine_game = self.server.get_game(game_id)
+            LOGGER.info('Game %s: status=%s phase_type=%s talk_round=%d talk_state=%s',
+                        game_id, engine_game.status, engine_game.phase_type,
+                        engine_game.talk_round, engine_game.talk_round_state)
+            if engine_game.is_game_active and engine_game.phase_type == 'T':
+                engine_game.process()
+                LOGGER.info('Talk round opened: round=%d state=%s',
+                            engine_game.talk_round, engine_game.talk_round_state)
+        except Exception as exc:
+            LOGGER.error('Failed to open talk round: %s', exc)
+
+        # Start bot runners if there are any bots
+        if lobby.bot_configs:
+            from tornado.ioloop import IOLoop
+            from diplomacy.server import bot_runner
+            IOLoop.current().add_callback(
+                bot_runner.start_bots, self.server, lobby)
 
         LOGGER.info('Game started: code=%s game_id=%s players=%d',
                      code, game_id, len(players))

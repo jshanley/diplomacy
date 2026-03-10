@@ -35,6 +35,8 @@ export const NOTIFICATIONS = {
         power_vote_updated: STRINGS.GAME,
         power_wait_flag: STRINGS.GAME,
         powers_controllers: STRINGS.GAME,
+        talk_round_update: STRINGS.GAME,
+        talk_press_log: STRINGS.GAME,
         vote_count_updated: STRINGS.GAME,
         vote_updated: STRINGS.GAME,
     },

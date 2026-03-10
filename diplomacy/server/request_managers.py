@@ -36,7 +36,7 @@ from diplomacy.server.server_game import ServerGame
 from diplomacy.server.request_manager_utils import (SynchronizedData, verify_request, transfer_special_tokens,
                                                     assert_game_not_finished)
 from diplomacy.utils import exceptions, strings, constants, export
-from diplomacy.utils.common import hash_password
+from diplomacy.utils.common import hash_password, timestamp_microseconds
 from diplomacy.utils.token import create_token
 from diplomacy.utils.constants import OrderSettings
 from diplomacy.utils.game_phase_data import GamePhaseData
@@ -807,6 +807,56 @@ def on_send_game_message(server, request, connection_handler):
         if message.sender == message.recipient:
             raise exceptions.ResponseException('A power cannot send message to itself.')
 
+    # --- Talk phase batch collection ---
+    if (level.game.phase_type == 'T'
+            and 'NO_TALK' not in level.game.rules
+            and level.game.talk_round_state == strings.ROUND_OPEN):
+        power_name = message.sender
+        is_communique = message.is_global()
+
+        status = 'valid'
+        void_reason = ''
+
+        if is_communique:
+            # Communiques have their own per-year quota (separate from private messages)
+            comm_count = level.game.talk_communique_counts.get(power_name, 0)
+            level.game.talk_communique_counts[power_name] = comm_count + 1
+            if comm_count >= level.game.talk_max_communiques_per_year:
+                status = 'void'
+                void_reason = 'Communique limit exceeded (%d per year)' % level.game.talk_max_communiques_per_year
+            elif len(message.message) > level.game.talk_max_communique_chars:
+                status = 'void'
+                void_reason = 'Communique too long (%d char limit)' % level.game.talk_max_communique_chars
+        else:
+            # Private messages have per-round quota
+            current_count = level.game.talk_message_counts.get(power_name, 0)
+            level.game.talk_message_counts[power_name] = current_count + 1
+            if current_count >= level.game.talk_max_messages_per_round:
+                status = 'void'
+                void_reason = 'Message limit exceeded (%d per round)' % level.game.talk_max_messages_per_round
+            elif len(message.message) > level.game.talk_max_chars_per_message:
+                status = 'void'
+                void_reason = 'Message too long (%d char limit)' % level.game.talk_max_chars_per_message
+
+        held = {
+            'sender': message.sender,
+            'recipient': message.recipient,
+            'phase': message.phase,
+            'message': message.message,
+            'round': level.game.talk_round,
+            'status': status,
+            'void_reason': void_reason,
+            'type': 'communique' if is_communique else 'private',
+        }
+        level.game.talk_held_messages.append(held)
+        server.save_game(level.game)
+        return responses.DataTimeStamp(data=timestamp_microseconds(), request_id=request.request_id)
+
+    if (level.game.phase_type == 'T'
+            and 'NO_TALK' not in level.game.rules
+            and level.game.talk_round_state in (strings.ORDERS_OPEN, strings.ROUND_CLOSED)):
+        raise exceptions.ResponseException('Messages can only be sent during talk rounds.')
+
     if request.re_sent:
         # Request is re-sent (e.g. after a synchronization). We may have already received this message.
         # lookup message. WARNING: This may take time if there are many messages. How to improve that ?
@@ -1034,7 +1084,7 @@ def on_set_orders(server, request, connection_handler):
         level.game.set_wait(level.power_name, request.wait)
         Notifier(server, ignore_addresses=[request.address_in_game]).notify_power_wait_flag(
             level.game, level.game.get_power(level.power_name), request.wait)
-    if level.game.does_not_wait():
+    if level.game.does_not_wait() and level.game.phase_type != 'T':
         server.force_game_processing(level.game)
     server.save_game(level.game)
 
@@ -1054,7 +1104,24 @@ def on_set_wait_flag(server, request, connection_handler):
     # Notify other power tokens.
     Notifier(server, ignore_addresses=[request.address_in_game]).notify_power_wait_flag(
         level.game, level.game.get_power(level.power_name), request.wait)
-    if level.game.does_not_wait():
+    # Talk phase: wait=False means "I'm ready for this round"
+    if level.game.phase_type == 'T' and not request.wait:
+        level.game.talk_ready.add(level.power_name)
+        LOGGER.info('Talk ready: %s added (%d/%d ready)',
+                     level.power_name, len(level.game.talk_ready),
+                     sum(1 for p in level.game.powers.values()
+                         if not p.is_eliminated() and p.is_controlled()))
+        if level.game.talk_round_complete():
+            LOGGER.info('Talk round complete — advancing via process()')
+            # Call process() directly — force_game_processing's scheduler
+            # validator (does_not_wait) rejects Talk rounds since orders
+            # aren't set yet during round_open.
+            level.game.process()
+            LOGGER.info('Talk state now: round=%d state=%s',
+                         level.game.talk_round, level.game.talk_round_state)
+    elif level.game.phase_type == 'T' and request.wait:
+        level.game.talk_ready.discard(level.power_name)
+    elif level.game.does_not_wait():
         server.force_game_processing(level.game)
     server.save_game(level.game)
 

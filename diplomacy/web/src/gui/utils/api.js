@@ -147,10 +147,17 @@ export const api = {
 
     // --- Lobby API (Jackbox-style) ---
 
-    async lobbyCreate(displayName, mapName = 'standard', assignment = 'random') {
+    async lobbyCreate(displayName, mapName = 'standard', assignment = 'random',
+                      enableTalk = true, talkRounds = 2) {
         return this._fetch('/api/lobby/create', {
             method: 'POST',
-            body: JSON.stringify({ display_name: displayName, map_name: mapName, assignment }),
+            body: JSON.stringify({
+                display_name: displayName,
+                map_name: mapName,
+                assignment,
+                enable_talk: enableTalk,
+                talk_rounds: talkRounds,
+            }),
         });
     },
 
@@ -191,5 +198,23 @@ export const api = {
 
     async lobbyProcess(code) {
         return this._fetch(`/api/lobby/${code}/process`, { method: 'POST' });
+    },
+
+    async lobbySendMessage(code, recipient, message) {
+        return this._fetch(`/api/lobby/${code}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ recipient, message }),
+        });
+    },
+
+    async lobbyReady(code) {
+        return this._fetch(`/api/lobby/${code}/ready`, { method: 'POST' });
+    },
+
+    async lobbyAddBots(code, count, apiKey, model = null, provider = 'anthropic') {
+        return this._fetch(`/api/lobby/${code}/bots`, {
+            method: 'POST',
+            body: JSON.stringify({ count, api_key: apiKey, model, provider }),
+        });
     },
 };

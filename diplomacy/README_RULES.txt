@@ -59,6 +59,12 @@
         implications of the PUBLIC_PRESS rule.)
 
 ==================================================================
+** NO_TALK ** ()
+        Talk phases are skipped. When this rule is active, the game advances
+        directly from one movement phase to the next without a negotiation
+        round in between. This is the default for solitaire games.
+
+==================================================================
 ** DONT_SKIP_PHASES ** ()
         If this rule is used, all phases (including phases where all players need
         to issue blank orders) will be played, and empty phases won't be skipped.
@@ -227,6 +233,7 @@
 <!-- RULE GROUP 2 Player Press -->
 <!-- RULE NO_PRESS -PUBLIC_PRESS -->
 <!-- RULE PUBLIC_PRESS -NO_PRESS -->
+<!-- RULE NO_TALK -->
 <!-- RULE GROUP 3 Movement Order -->
 <!-- RULE DONT_SKIP_PHASES -->
 <!-- RULE IGNORE_ERRORS -->

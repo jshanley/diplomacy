@@ -36,12 +36,21 @@ class ServerGame(Game):
         - **omniscient** (only for server games):
           special Power object (diplomacy.Power) used to manage omniscient tokens.
     """
-    __slots__ = ['server', 'omniscient_usernames', 'moderator_usernames', 'observer', 'omniscient']
+    __slots__ = ['server', 'omniscient_usernames', 'moderator_usernames', 'observer', 'omniscient',
+                 'talk_round', 'talk_round_state', 'talk_ready', 'talk_held_messages',
+                 'talk_message_counts', 'talk_communique_counts',
+                 '_last_delivered_messages', '_last_closed_round', '_last_press_log']
     model = parsing.update_model(Game.model, {
         strings.MODERATOR_USERNAMES: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
         strings.OBSERVER: parsing.OptionalValueType(parsing.JsonableClassType(Power)),
         strings.OMNISCIENT: parsing.OptionalValueType(parsing.JsonableClassType(Power)),
         strings.OMNISCIENT_USERNAMES: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
+        strings.TALK_ROUND: parsing.DefaultValueType(int, 0),
+        strings.TALK_ROUND_STATE: parsing.DefaultValueType(str, ''),
+        strings.TALK_READY: parsing.DefaultValueType(parsing.SequenceType(str, sequence_builder=set), ()),
+        strings.TALK_HELD_MESSAGES: parsing.DefaultValueType(parsing.SequenceType(dict), []),
+        strings.TALK_MESSAGE_COUNTS: parsing.DefaultValueType(parsing.DictType(str, int), {}),
+        strings.TALK_COMMUNIQUE_COUNTS: parsing.DefaultValueType(parsing.DictType(str, int), {}),
     })
 
     def __init__(self, server=None, **kwargs):
@@ -51,6 +60,15 @@ class ServerGame(Game):
         self.moderator_usernames = None     # type: set
         self.observer = None                # type: Power
         self.omniscient = None              # type: Power
+        self.talk_round = 0
+        self.talk_round_state = ''
+        self.talk_ready = set()
+        self.talk_held_messages = []
+        self.talk_message_counts = {}
+        self.talk_communique_counts = {}
+        self._last_delivered_messages = []
+        self._last_closed_round = 0
+        self._last_press_log = []
 
         super(ServerGame, self).__init__(**kwargs)
         assert self.is_server_game()
@@ -459,6 +477,80 @@ class ServerGame(Game):
         for power in self.powers.values():  # type: Power
             power.remove_tokens([token for token in power.tokens if not filter_function(token)])
 
+    def _open_talk_round(self, round_number):
+        """Open a new talk round."""
+        self.talk_round = round_number
+        self.talk_round_state = strings.ROUND_OPEN
+        self.talk_ready = set()
+        self.talk_message_counts = {}
+        # Reset communique counts at the start of each year (Spring round 1)
+        if round_number == 1 and self.current_short_phase.startswith('S'):
+            self.talk_communique_counts = {}
+
+    def _generate_press_log(self, round_number):
+        """Build press log entries (metadata only) for the given round."""
+        entries = []
+        for held in self.talk_held_messages:
+            if held.get('round') == round_number:
+                entries.append({
+                    'sender': held['sender'],
+                    'recipient': held['recipient'],
+                    'char_count': len(held.get('message', '')),
+                    'status': held['status'],
+                    'type': held['type'],
+                })
+        return entries
+
+    def _close_talk_round(self):
+        """Close the current talk round and deliver valid held messages."""
+        self.talk_round_state = strings.ROUND_CLOSED
+        self._last_closed_round = self.talk_round
+        # Generate press log before clearing messages
+        self._last_press_log = self._generate_press_log(self.talk_round)
+        delivered = []
+        remaining = []
+        for held in self.talk_held_messages:
+            if held.get('round') == self.talk_round:
+                if held.get('status') == 'valid':
+                    msg = Message(
+                        sender=held['sender'],
+                        recipient=held['recipient'],
+                        phase=held['phase'],
+                        message=held['message'],
+                    )
+                    msg.time_sent = self.add_message(msg)
+                    delivered.append(msg)
+                # else: void message — discard (not delivered, not kept)
+            else:
+                remaining.append(held)
+        self.talk_held_messages = remaining
+        self._last_delivered_messages = delivered
+
+    def _reset_talk_state(self):
+        """Reset talk state for next Talk phase."""
+        self.talk_round = 0
+        self.talk_round_state = ''
+        self.talk_ready = set()
+        self.talk_held_messages = []
+        self.talk_message_counts = {}
+        self._last_delivered_messages = []
+        self._last_press_log = []
+
+    def talk_round_complete(self):
+        """Check if all non-eliminated controlled powers have signaled ready."""
+        if self.phase_type != 'T':
+            return False
+        if self.talk_round_state not in (strings.ROUND_OPEN, strings.ORDERS_OPEN):
+            return False
+        for power in self.powers.values():
+            if power.is_eliminated():
+                continue
+            if not power.is_controlled():
+                continue
+            if power.name not in self.talk_ready:
+                return False
+        return True
+
     def process(self):
         """ Process current game phase and move forward to next phase.
 
@@ -477,6 +569,50 @@ class ServerGame(Game):
         """
         if not self.is_game_active:
             return None, None, None
+
+        # --- Talk round handling ---
+        if self.phase_type == 'T' and 'NO_TALK' not in self.rules:
+            if self.talk_round == 0:
+                # First time entering this Talk phase — open round 1
+                self._open_talk_round(1)
+                return None, None, None
+
+            if self.talk_round < self.talk_num_rounds:
+                # More rounds remain — advance to next round
+                self._close_talk_round()
+                self._open_talk_round(self.talk_round + 1)
+                return None, None, None
+
+            if self.talk_round == self.talk_num_rounds and self.talk_round_state != strings.ORDERS_OPEN:
+                # Final round done, transition to ORDERS_OPEN
+                self._close_talk_round()
+                self.talk_round_state = strings.ORDERS_OPEN
+                self.talk_ready = set()
+                return None, None, None
+
+            # ORDERS_OPEN done — save Talk history, transition to Movement, then process orders.
+            talk_phase = self._phase_wrapper_type(self.current_short_phase)
+            talk_messages = self.messages.copy()
+            talk_state = self.get_state()
+
+            self._reset_talk_state()
+
+            # Advance phase from Talk → Movement
+            next_movement = self.map.find_next_phase(self.phase, phase_type='M')
+            if next_movement and next_movement not in ('', 'FORMING', 'COMPLETED'):
+                self.phase = next_movement
+                self.phase_type = 'M'
+
+            # Record Talk phase in history (negotiation only — no orders/results)
+            self.order_history.put(talk_phase, {})
+            self.message_history.put(talk_phase, talk_messages)
+            self.state_history.put(talk_phase, talk_state)
+            self.result_history.put(talk_phase, {})
+            self.messages.clear()
+            self.clear_vote()
+            if self.error:
+                self.error = []
+
         # Kick powers if necessary.
         all_orderable_locations = self.get_orderable_locations()
         kicked_powers = {}
@@ -502,6 +638,12 @@ class ServerGame(Game):
         if self.count_controlled_powers() < self.get_expected_controls_count():
             # There is no more enough controlled powers, we should stop game.
             self.set_status(strings.FORMING)
+
+        # If we've landed on a new Talk phase, auto-open round 1 so
+        # the UI and bots immediately see round_open.
+        if (self.is_game_active and self.phase_type == 'T'
+                and self.talk_round == 0 and 'NO_TALK' not in self.rules):
+            self._open_talk_round(1)
 
         # Return process results: previous phase data, current phase data, and None for no kicked powers.
         return previous_phase_data, self.get_phase_data(), None

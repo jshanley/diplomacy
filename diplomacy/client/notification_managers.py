@@ -229,6 +229,26 @@ def on_vote_count_updated(game, notification):
     """
     assert Game.is_observer_game(game)
 
+def on_talk_round_update(game, notification):
+    """ Manage notification TalkRoundUpdate.
+
+        :param game: a Network game
+        :param notification: notification received
+        :type game: diplomacy.client.network_game.NetworkGame
+        :type notification: diplomacy.communication.notifications.TalkRoundUpdate
+    """
+    pass  # Client can use callbacks to respond to round state changes
+
+def on_talk_press_log(game, notification):
+    """ Manage notification TalkPressLog.
+
+        :param game: a Network game
+        :param notification: notification received
+        :type game: diplomacy.client.network_game.NetworkGame
+        :type notification: diplomacy.communication.notifications.TalkPressLog
+    """
+    pass  # Client can use callbacks to consume press log entries
+
 def on_vote_updated(game, notification):
     """ Manage notification VoteUpdated (for omniscient game).
 
@@ -258,6 +278,8 @@ MAPPING = {
     notifications.PowersControllers: on_powers_controllers,
     notifications.PowerVoteUpdated: on_power_vote_updated,
     notifications.PowerWaitFlag: on_power_wait_flag,
+    notifications.TalkRoundUpdate: on_talk_round_update,
+    notifications.TalkPressLog: on_talk_press_log,
     notifications.VoteCountUpdated: on_vote_count_updated,
     notifications.VoteUpdated: on_vote_updated,
 }

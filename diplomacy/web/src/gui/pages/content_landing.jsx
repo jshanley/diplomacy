@@ -11,6 +11,8 @@ export class ContentLanding extends React.Component {
             code: '',
             displayName: api.getDisplayName() || '',
             mapName: 'standard',
+            enableTalk: true,
+            talkRounds: 2,
             error: null,
             loading: false,
         };
@@ -56,13 +58,15 @@ export class ContentLanding extends React.Component {
 
     async onCreate(e) {
         e.preventDefault();
-        const { displayName, mapName } = this.state;
+        const { displayName, mapName, enableTalk, talkRounds } = this.state;
         if (!displayName.trim()) return this.setState({ error: 'Enter your name' });
 
         this.setState({ loading: true, error: null });
         try {
             await this.ensureIdentity(displayName.trim());
-            const data = await api.lobbyCreate(displayName.trim(), mapName);
+            const data = await api.lobbyCreate(
+                displayName.trim(), mapName, 'random', enableTalk, talkRounds
+            );
             const page = this.context;
             page.loadLobby(data.code, data.player, data.lobby);
         } catch (err) {
@@ -71,7 +75,7 @@ export class ContentLanding extends React.Component {
     }
 
     render() {
-        const { mode, code, displayName, mapName, error, loading } = this.state;
+        const { mode, code, displayName, mapName, enableTalk, talkRounds, error, loading } = this.state;
 
         return (
             <div className="landing-root">
@@ -156,6 +160,35 @@ export class ContentLanding extends React.Component {
                                         <option value="pure">Pure</option>
                                     </select>
                                 </div>
+                                <div className="landing-field">
+                                    <label className="landing-label">NEGOTIATION</label>
+                                    <div className="landing-toggle-row">
+                                        <button
+                                            type="button"
+                                            className={`landing-toggle-btn ${enableTalk ? 'active' : ''}`}
+                                            onClick={() => this.setState({ enableTalk: true })}
+                                        >ON</button>
+                                        <button
+                                            type="button"
+                                            className={`landing-toggle-btn ${!enableTalk ? 'active' : ''}`}
+                                            onClick={() => this.setState({ enableTalk: false })}
+                                        >OFF</button>
+                                    </div>
+                                </div>
+                                {enableTalk && (
+                                    <div className="landing-field">
+                                        <label className="landing-label">TALK ROUNDS</label>
+                                        <select
+                                            className="landing-select"
+                                            value={talkRounds}
+                                            onChange={e => this.setState({ talkRounds: parseInt(e.target.value) })}
+                                        >
+                                            <option value={1}>1 round</option>
+                                            <option value={2}>2 rounds</option>
+                                            <option value={3}>3 rounds</option>
+                                        </select>
+                                    </div>
+                                )}
                                 <button className="landing-btn" type="submit" disabled={loading}>
                                     {loading ? 'CREATING...' : 'CREATE GAME'}
                                 </button>
